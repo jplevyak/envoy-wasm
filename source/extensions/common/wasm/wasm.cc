@@ -702,6 +702,7 @@ void abortHandler(void*, Word) { throw WasmException("emscripten abort"); }
 void _abortHandler(void*) { throw WasmException("emscripten abort"); }
 
 void _llvm_trapHandler(void*) { throw WasmException("emscripten llvm_trap"); }
+Word _llvm_eh_typeid_forHandler(void*, Word) { throw WasmException("emscripten _llvm_eh_typeid_for"); }
 
 void ___assert_failHandler(void*, Word, Word, Word, Word) {
   throw WasmException("emscripten assert_fail");
@@ -716,9 +717,28 @@ Word ___call_mainHandler(void*, Word, Word) { throw WasmException("emscripten ca
 Word ___cxa_allocate_exceptionHandler(void*, Word) {
   throw WasmException("emscripten cxa_allocate_exception");
 }
+void ___cxa_free_exceptionHandler(void*, Word) {
+  throw WasmException("emscripten cxa_free_exception");
+}
 
 Word ___cxa_uncaught_exceptionHandler(void*) {
   throw WasmException("emscripten cxa_uncaught_exception");
+}
+
+void ___cxa_begin_catchHandler(void*, Word) {
+  throw WasmException("emscripten cxa_begin_catch");
+}
+void ___cxa_end_catchHandler(void*) {
+  throw WasmException("emscripten cxa_end_catch");
+}
+Word ___cxa_find_matching_catch_2Handler(void*) {
+  throw WasmException("emscripten cxa_find_matching_catch_2");
+}
+Word ___cxa_find_matching_catch_3Handler(void*, Word) {
+  throw WasmException("emscripten cxa_find_matching_catch_3");
+}
+void ___resumeExceptionHandler(void*, Word) {
+  throw WasmException("emscripten resumeException");
 }
 
 Word ___clock_gettimeHandler(void*, Word, Word) { throw WasmException("emscripten clock_gettime"); }
@@ -794,7 +814,23 @@ Word _pthread_onceHandler(void*, Word, Word) { throw WasmException("emscripten p
 Word _pthread_setspecificHandler(void*, Word, Word) {
   throw WasmException("emscripten pthread_setspecific");
 }
-void setTempRet0Handler(void*, Word) { throw WasmException("emscripten setTempRet0"); }
+
+thread_local Word tempRet0(0);
+void setTempRet0Handler(void*, Word w) {
+  tempRet0 = w;
+}
+Word getTempRet0Handler(void*) {
+  return tempRet0;
+}
+
+Word invoke_iHandler(void*, Word) { throw WasmException("emscripten invoke_i"); }
+Word invoke_iiHandler(void*, Word, Word) { throw WasmException("emscripten invoke_ii"); }
+Word invoke_iiiHandler(void*, Word, Word, Word) { throw WasmException("emscripten invoke_iii"); }
+Word invoke_iiiiHandler(void*, Word, Word, Word, Word) { throw WasmException("emscripten invoke_iiii"); }
+void invoke_vHandler(void*, Word) { throw WasmException("emscripten invoke_v"); }
+void invoke_viHandler(void*, Word, Word) { throw WasmException("emscripten invoke_vi"); }
+void invoke_viiHandler(void*, Word, Word, Word) { throw WasmException("emscripten invoke_vii"); }
+void invoke_viiiHandler(void*, Word, Word, Word, Word) { throw WasmException("emscripten invoke_viii"); }
 
 void setTickPeriodMillisecondsHandler(void* raw_context, Word tick_period_milliseconds) {
   WASM_CONTEXT(raw_context)->setTickPeriod(std::chrono::milliseconds(tick_period_milliseconds));
@@ -1679,11 +1715,18 @@ void Wasm::registerCallbacks() {
     _REGISTER(abort);
     _REGISTER(_abort);
     _REGISTER(_llvm_trap);
+    _REGISTER(_llvm_eh_typeid_for);
     _REGISTER(___assert_fail);
     _REGISTER(___cxa_throw);
     _REGISTER(___cxa_pure_virtual);
     _REGISTER(___cxa_allocate_exception);
+    _REGISTER(___cxa_free_exception);
     _REGISTER(___cxa_uncaught_exception);
+    _REGISTER(___cxa_begin_catch);
+    _REGISTER(___cxa_end_catch);
+    _REGISTER(___cxa_find_matching_catch_2);
+    _REGISTER(___cxa_find_matching_catch_3);
+    _REGISTER(___resumeException);
     _REGISTER(___call_main);
     _REGISTER(___clock_gettime);
     _REGISTER(___lock);
@@ -1701,6 +1744,15 @@ void Wasm::registerCallbacks() {
     _REGISTER(_pthread_once);
     _REGISTER(_pthread_setspecific);
     _REGISTER(setTempRet0);
+    _REGISTER(getTempRet0);
+    _REGISTER(invoke_i);
+    _REGISTER(invoke_ii);
+    _REGISTER(invoke_iii);
+    _REGISTER(invoke_iiii);
+    _REGISTER(invoke_v);
+    _REGISTER(invoke_vi);
+    _REGISTER(invoke_vii);
+    _REGISTER(invoke_viii);
   }
 #undef _REGISTER
 #undef _REGISTER_ABI

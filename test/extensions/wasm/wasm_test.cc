@@ -323,6 +323,28 @@ TEST_P(WasmTest, StatsHighLevel) {
   context->onLog();
 }
 
+TEST(WasmTestWavmOnly, Exception) {
+  Stats::IsolatedStoreImpl stats_store;
+  Api::ApiPtr api = Api::createApiForTest(stats_store);
+  Upstream::MockClusterManager cluster_manager;
+  Event::DispatcherPtr dispatcher(api->allocateDispatcher());
+  auto scope = Stats::ScopeSharedPtr(stats_store.createScope("wasm."));
+  NiceMock<LocalInfo::MockLocalInfo> local_info;
+  auto wasm = std::make_shared<Extensions::Common::Wasm::Wasm>("envoy.wasm.vm.wavm", "", "",
+                                                               cluster_manager, *dispatcher, *scope,
+                                                               local_info, nullptr, scope);
+  EXPECT_NE(wasm, nullptr);
+  const auto code = TestEnvironment::readFileToStringForTest(TestEnvironment::substitute(
+      "{{ test_rundir }}/test/extensions/wasm/test_data/exception_cpp.wasm"));
+  EXPECT_FALSE(code.empty());
+  auto context = std::make_unique<TestContext>(wasm.get());
+  EXPECT_CALL(*context, scriptLog_(spdlog::level::info, Eq("before excpetion")));
+  EXPECT_CALL(*context, scriptLog_(spdlog::level::err, Eq("exception 13")));
+  EXPECT_CALL(*context, scriptLog_(spdlog::level::warn, Eq("after excpetion")));
+  EXPECT_TRUE(wasm->initialize(code, "<test>", false));
+  wasm->startForTesting(std::move(context));
+}
+
 } // namespace Wasm
 } // namespace Extensions
 } // namespace Envoy
