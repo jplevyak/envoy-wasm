@@ -2268,15 +2268,12 @@ void Wasm::registerCallbacks() {
     _REGISTER(___cxa_allocate_exception);
     _REGISTER(___cxa_free_exception);
     _REGISTER(___cxa_uncaught_exception);
-<<<<<<< HEAD
     _REGISTER(___cxa_begin_catch);
     _REGISTER(___cxa_end_catch);
     _REGISTER(___cxa_find_matching_catch_2);
     _REGISTER(___cxa_find_matching_catch_3);
     _REGISTER(___resumeException);
-=======
     _REGISTER(___cxa_uncaught_exceptions);
->>>>>>> ef4da0bda2bee932c575c0c98508c473dd6085c5
     _REGISTER(___call_main);
     _REGISTER(___clock_gettime);
     _REGISTER(___lock);
