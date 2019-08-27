@@ -15,10 +15,11 @@
 #include "envoy/upstream/cluster_manager.h"
 
 #include "common/common/assert.h"
-#include "common/common/c_smart_ptr.h"
 #include "common/common/logger.h"
 #include "common/common/stack_array.h"
+#include "common/stats/symbol_table_impl.h"
 
+#include "extensions/common/wasm/wasm_vm.h"
 #include "extensions/common/wasm/well_known_names.h"
 #include "extensions/filters/http/well_known_names.h"
 
@@ -27,213 +28,86 @@ namespace Extensions {
 namespace Common {
 namespace Wasm {
 
+#include "api/wasm/cpp/proxy_wasm_result.h"
+#include "api/wasm/cpp/proxy_wasm_metadata.h"
+
 class Context;
 class Wasm;
 class WasmVm;
 
-// Represents a WASM-native word-sized datum. On 32-bit VMs, the high bits are always zero.
-// The WASM/VM API treats all bits as significant.
-struct Word {
-  Word(uint64_t w) : u64(w) {}              // Implicit conversion into Word.
-  operator uint64_t() const { return u64; } // Implicit conversion into uint64_t.
-  // Note: no implicit conversion to uint32_t as it is lossy.
-  uint32_t u32() const { return static_cast<uint32_t>(u64); }
-  uint64_t u64;
-};
-
-template <typename T> struct ConvertWordTypeToUint32 { using type = T; };
-template <> struct ConvertWordTypeToUint32<Word> { using type = uint32_t; };
-
-inline uint32_t convertWordToUint32(Word w) { return static_cast<uint32_t>(w.u64); }
-inline uint32_t convertWordToUint32(uint32_t v) { return v; }
-inline uint64_t convertWordToUint32(uint64_t v) { return v; }
-inline int64_t convertWordToUint32(int64_t v) { return v; }
-inline float convertWordToUint32(float v) { return v; }
-inline double convertWordToUint32(double v) { return v; }
-
-// Convert a function of the form Word(Word...) to one of the form uint32_t(uint32_t...).
-template <typename F, F* fn> struct ConvertFunctionWordToUint32 {
-  static void convertFunctionWordToUint32() {}
-};
-template <typename R, typename... Args, auto (*F)(Args...)->R>
-struct ConvertFunctionWordToUint32<R(Args...), F> {
-  static auto convertFunctionWordToUint32(typename ConvertWordTypeToUint32<Args>::type... args) {
-    return convertWordToUint32(F(std::forward<Args>(args)...));
-  }
-};
-template <typename... Args, auto (*F)(Args...)->void>
-struct ConvertFunctionWordToUint32<void(Args...), F> {
-  static void convertFunctionWordToUint32(typename ConvertWordTypeToUint32<Args>::type... args) {
-    F(std::forward<Args>(args)...);
-  }
-};
-
-template <typename F> struct ConvertFunctionTypeWordToUint32 {};
-template <typename R, typename... Args> struct ConvertFunctionTypeWordToUint32<R (*)(Args...)> {
-  using type = typename ConvertWordTypeToUint32<R>::type (*)(
-      typename ConvertWordTypeToUint32<Args>::type...);
-};
-
 using Pairs = std::vector<std::pair<absl::string_view, absl::string_view>>;
 using PairsWithStringValues = std::vector<std::pair<absl::string_view, std::string>>;
 
-// 1st arg is always a pointer to Context (Context*).
-using WasmCall0Void = std::function<void(Context*)>;
-using WasmCall1Void = std::function<void(Context*, Word)>;
-using WasmCall2Void = std::function<void(Context*, Word, Word)>;
-using WasmCall3Void = std::function<void(Context*, Word, Word, Word)>;
-using WasmCall4Void = std::function<void(Context*, Word, Word, Word, Word)>;
-using WasmCall5Void = std::function<void(Context*, Word, Word, Word, Word, Word)>;
-using WasmCall6Void = std::function<void(Context*, Word, Word, Word, Word, Word, Word)>;
-using WasmCall7Void = std::function<void(Context*, Word, Word, Word, Word, Word, Word, Word)>;
-using WasmCall8Void = std::function<void(Context*, Word, Word, Word, Word, Word, Word, Word, Word)>;
-using WasmCall1Int = std::function<Word(Context*, Word)>;
-using WasmCall2Int = std::function<Word(Context*, Word, Word)>;
-using WasmCall3Int = std::function<Word(Context*, Word, Word, Word)>;
-using WasmCall4Int = std::function<Word(Context*, Word, Word, Word, Word)>;
-using WasmCall5Int = std::function<Word(Context*, Word, Word, Word, Word, Word)>;
-using WasmCall6Int = std::function<Word(Context*, Word, Word, Word, Word, Word, Word)>;
-using WasmCall7Int = std::function<Word(Context*, Word, Word, Word, Word, Word, Word, Word)>;
-using WasmCall8Int = std::function<Word(Context*, Word, Word, Word, Word, Word, Word, Word, Word)>;
-
-// 1st arg is always a context_id (uint32_t).
-using WasmContextCall0Void = WasmCall1Void;
-using WasmContextCall1Void = WasmCall2Void;
-using WasmContextCall2Void = WasmCall3Void;
-using WasmContextCall3Void = WasmCall4Void;
-using WasmContextCall4Void = WasmCall5Void;
-using WasmContextCall5Void = WasmCall6Void;
-using WasmContextCall6Void = WasmCall7Void;
-using WasmContextCall7Void = WasmCall8Void;
-using WasmContextCall0Int = WasmCall1Int;
-using WasmContextCall1Int = WasmCall2Int;
-using WasmContextCall2Int = WasmCall3Int;
-using WasmContextCall3Int = WasmCall4Int;
-using WasmContextCall4Int = WasmCall5Int;
-using WasmContextCall5Int = WasmCall6Int;
-using WasmContextCall6Int = WasmCall7Int;
-using WasmContextCall7Int = WasmCall8Int;
-
-// 1st arg is always a pointer to raw_context (void*).
-using WasmCallback0Void = void (*)(void*);
-using WasmCallback1Void = void (*)(void*, Word);
-using WasmCallback2Void = void (*)(void*, Word, Word);
-using WasmCallback3Void = void (*)(void*, Word, Word, Word);
-using WasmCallback4Void = void (*)(void*, Word, Word, Word, Word);
-using WasmCallback5Void = void (*)(void*, Word, Word, Word, Word, Word);
-using WasmCallback6Void = void (*)(void*, Word, Word, Word, Word, Word, Word);
-using WasmCallback7Void = void (*)(void*, Word, Word, Word, Word, Word, Word, Word);
-using WasmCallback8Void = void (*)(void*, Word, Word, Word, Word, Word, Word, Word, Word);
-using WasmCallback0Int = Word (*)(void*);
-using WasmCallback1Int = Word (*)(void*, Word);
-using WasmCallback2Int = Word (*)(void*, Word, Word);
-using WasmCallback3Int = Word (*)(void*, Word, Word, Word);
-using WasmCallback4Int = Word (*)(void*, Word, Word, Word, Word);
-using WasmCallback5Int = Word (*)(void*, Word, Word, Word, Word, Word);
-using WasmCallback6Int = Word (*)(void*, Word, Word, Word, Word, Word, Word);
-using WasmCallback7Int = Word (*)(void*, Word, Word, Word, Word, Word, Word, Word, Word);
-using WasmCallback8Int = Word (*)(void*, Word, Word, Word, Word, Word, Word, Word, Word, Word);
-using WasmCallback9Int = Word (*)(void*, Word, Word, Word, Word, Word, Word, Word, Word, Word,
-                                  Word);
-// Using the standard g++/clang mangling algorithm:
-// https://itanium-cxx-abi.github.io/cxx-abi/abi.html#mangling-builtin
-// Extended with W = Word
-// Z = void, j = uint32_t, l = int64_t, m = uint64_t
-using WasmCallback_ZWl = void (*)(void*, Word, int64_t);
-using WasmCallback_ZWm = void (*)(void*, Word, uint64_t);
-using WasmCallback_m = uint64_t (*)(void*);
-using WasmCallback_mW = uint64_t (*)(void*, Word);
-using WasmCallback_jW = uint32_t (*)(void*, Word);
-
-// Sadly we don't have enum class inheritance in c++-14.
-enum class StreamType : uint32_t { Request = 0, Response = 1, MAX = 1 };
-enum class MetadataType : uint32_t {
-  Request = 0,
-  Response = 1,
-  RequestRoute = 2,
-  ResponseRoute = 3,
-  Log = 4,
-  Node = 5,
-  Listener = 6,
-  Cluster = 7,
-  MAX = 7
-};
-enum class HeaderMapType : uint32_t {
-  RequestHeaders = 0,
-  RequestTrailers = 1,
-  ResponseHeaders = 2,
-  ResponseTrailers = 3,
-  GrpcCreateInitialMetadata = 4,
-  GrpcReceiveInitialMetadata = 5,
-  GrpcReceiveTrailingMetadata = 6,
-  MAX = 6,
-};
+enum class StreamType : int32_t { Request = 0, Response = 1, MAX = 1 };
 
 // Handlers for functions exported from envoy to wasm.
-void logHandler(void* raw_context, Word level, Word address, Word size);
-void getProtocolHandler(void* raw_context, Word type, Word value_ptr_ptr, Word value_size_ptr);
-uint32_t getDestinationPortHandler(void* raw_context, Word type);
-uint32_t getResponseCodeHandler(void* raw_context, Word type);
-void getMetadataHandler(void* raw_context, Word type, Word key_ptr, Word key_size,
+Word logHandler(void* raw_context, Word level, Word address, Word size);
+Word getMetadataHandler(void* raw_context, Word type, Word key_ptr, Word key_size,
                         Word value_ptr_ptr, Word value_size_ptr);
-void setMetadataHandler(void* raw_context, Word type, Word key_ptr, Word key_size, Word value_ptr,
+Word setMetadataHandler(void* raw_context, Word type, Word key_ptr, Word key_size, Word value_ptr,
                         Word value_size);
-void getMetadataPairsHandler(void* raw_context, Word type, Word ptr_ptr, Word size_ptr);
-void getMetadataStructHandler(void* raw_context, Word type, Word name_ptr, Word name_size,
+Word getMetadataPairsHandler(void* raw_context, Word type, Word ptr_ptr, Word size_ptr);
+Word getMetadataStructHandler(void* raw_context, Word type, Word name_ptr, Word name_size,
                               Word value_ptr_ptr, Word value_size_ptr);
-void setMetadataStructHandler(void* raw_context, Word type, Word name_ptr, Word name_size,
+Word setMetadataStructHandler(void* raw_context, Word type, Word name_ptr, Word name_size,
                               Word value_ptr, Word value_size);
-void continueRequestHandler(void* raw_context);
-void continueResponseHandler(void* raw_context);
-void sendLocalResponseHandler(void* raw_context, Word response_code, Word response_code_details_ptr,
+Word getSelectorExpressionHandler(void* raw_context, Word path_ptr, Word path_size,
+                                  Word value_ptr_ptr, Word value_size_ptr);
+Word continueRequestHandler(void* raw_context);
+Word continueResponseHandler(void* raw_context);
+Word sendLocalResponseHandler(void* raw_context, Word response_code, Word response_code_details_ptr,
                               Word response_code_details_size, Word body_ptr, Word body_size,
                               Word additional_response_header_pairs_ptr,
                               Word additional_response_header_pairs_size, Word grpc_status);
-void clearRouteCacheHandler(void* raw_context);
-void getSharedDataHandler(void* raw_context, Word key_ptr, Word key_size, Word value_ptr_ptr,
+Word clearRouteCacheHandler(void* raw_context);
+Word getSharedDataHandler(void* raw_context, Word key_ptr, Word key_size, Word value_ptr_ptr,
                           Word value_size_ptr, Word cas_ptr);
 Word setSharedDataHandler(void* raw_context, Word key_ptr, Word key_size, Word value_ptr,
                           Word value_size, Word cas);
-Word registerSharedQueueHandler(void* raw_context, Word queue_name_ptr, Word queue_name_size);
+Word registerSharedQueueHandler(void* raw_context, Word queue_name_ptr, Word queue_name_size,
+                                Word token_ptr);
 Word resolveSharedQueueHandler(void* raw_context, Word vm_id_ptr, Word vm_id_size,
-                               Word queue_name_ptr, Word queue_name_size);
+                               Word queue_name_ptr, Word queue_name_size, Word token_ptr);
 Word dequeueSharedQueueHandler(void* raw_context, Word token, Word data_ptr_ptr,
                                Word data_size_ptr);
 Word enqueueSharedQueueHandler(void* raw_context, Word token, Word data_ptr, Word data_size);
-void addHeaderMapValueHandler(void* raw_context, Word type, Word key_ptr, Word key_size,
+Word addHeaderMapValueHandler(void* raw_context, Word type, Word key_ptr, Word key_size,
                               Word value_ptr, Word value_size);
-void getHeaderMapValueHandler(void* raw_context, Word type, Word key_ptr, Word key_size,
+Word getHeaderMapValueHandler(void* raw_context, Word type, Word key_ptr, Word key_size,
                               Word value_ptr_ptr, Word value_size_ptr);
-void replaceHeaderMapValueHandler(void* raw_context, Word type, Word key_ptr, Word key_size,
+Word replaceHeaderMapValueHandler(void* raw_context, Word type, Word key_ptr, Word key_size,
                                   Word value_ptr, Word value_size);
-void removeHeaderMapValueHandler(void* raw_context, Word type, Word key_ptr, Word key_size);
-void getHeaderMapPairsHandler(void* raw_context, Word type, Word ptr_ptr, Word size_ptr);
-void setHeaderMapPairsHandler(void* raw_context, Word type, Word ptr, Word size);
-uint32_t getHeaderMapSizeHandler(void* raw_context, Word type);
-void getRequestBodyBufferBytesHandler(void* raw_context, Word start, Word length, Word ptr_ptr,
+Word removeHeaderMapValueHandler(void* raw_context, Word type, Word key_ptr, Word key_size);
+Word getHeaderMapPairsHandler(void* raw_context, Word type, Word ptr_ptr, Word size_ptr);
+Word setHeaderMapPairsHandler(void* raw_context, Word type, Word ptr, Word size);
+Word getHeaderMapSizeHandler(void* raw_context, Word type, Word result_ptr);
+Word getRequestBodyBufferBytesHandler(void* raw_context, Word start, Word length, Word ptr_ptr,
                                       Word size_ptr);
-void getResponseBodyBufferBytesHandler(void* raw_context, Word start, Word length, Word ptr_ptr,
+Word getResponseBodyBufferBytesHandler(void* raw_context, Word start, Word length, Word ptr_ptr,
                                        Word size_ptr);
 Word httpCallHandler(void* raw_context, Word uri_ptr, Word uri_size, Word header_pairs_ptr,
                      Word header_pairs_size, Word body_ptr, Word body_size, Word trailer_pairs_ptr,
                      Word trailer_pairs_size, Word timeout_milliseconds);
-Word defineMetricHandler(void* raw_context, Word metric_type, Word name_ptr, Word name_size);
-void incrementMetricHandler(void* raw_context, Word metric_id, int64_t offset);
-void recordMetricHandler(void* raw_context, Word metric_id, uint64_t value);
-uint64_t getMetricHandler(void* raw_context, Word metric_id);
+Word defineMetricHandler(void* raw_context, Word metric_type, Word name_ptr, Word name_size,
+                         Word result_ptr);
+Word incrementMetricHandler(void* raw_context, Word metric_id, int64_t offset);
+Word recordMetricHandler(void* raw_context, Word metric_id, uint64_t value);
+Word getMetricHandler(void* raw_context, Word metric_id, Word result_uint64_ptr);
 Word grpcCallHandler(void* raw_context, Word service_ptr, Word service_size, Word service_name_ptr,
                      Word service_name_size, Word method_name_ptr, Word method_name_size,
                      Word request_ptr, Word request_size, Word timeout_milliseconds);
 Word grpcStreamHandler(void* raw_context, Word service_ptr, Word service_size,
                        Word service_name_ptr, Word service_name_size, Word method_name_ptr,
                        Word method_name_size);
-void grpcCancelHandler(void* raw_context, Word token);
-void grpcCloseHandler(void* raw_context, Word token);
-void grpcSendHandler(void* raw_context, Word token, Word message_ptr, Word message_size,
+Word grpcCancelHandler(void* raw_context, Word token);
+Word grpcCloseHandler(void* raw_context, Word token);
+Word grpcSendHandler(void* raw_context, Word token, Word message_ptr, Word message_size,
                      Word end_stream);
 
-void setTickPeriodMillisecondsHandler(void* raw_context, Word tick_period_milliseconds);
-uint64_t getCurrentTimeNanosecondsHandler(void* raw_context);
+Word setTickPeriodMillisecondsHandler(void* raw_context, Word tick_period_milliseconds);
+Word getCurrentTimeNanosecondsHandler(void* raw_context, Word result_uint64_ptr);
+
+Word setEffectiveContextHandler(void* raw_context, Word context_id);
 
 inline MetadataType StreamType2MetadataType(StreamType type) {
   return static_cast<MetadataType>(type);
@@ -293,9 +167,10 @@ public:
   WasmVm* wasmVm() const;
   Upstream::ClusterManager& clusterManager() const;
   uint32_t id() const { return id_; }
-  absl::string_view root_id();
+  absl::string_view root_id() const;
   bool isVmContext() { return id_ == 0; }
   bool isRootContext() { return root_context_id_ == 0; }
+  Context* root_context() { return root_context_; }
 
   const StreamInfo::StreamInfo* getConstStreamInfo(MetadataType type) const;
   StreamInfo::StreamInfo* getStreamInfo(MetadataType type) const;
@@ -303,7 +178,7 @@ public:
   //
   // VM level downcalls into the WASM code on Context(id == 0).
   //
-  virtual void onStart(absl::string_view root_id);
+  virtual void onStart(absl::string_view root_id, absl::string_view vm_configuration);
   virtual void onConfigure(absl::string_view configuration);
 
   //
@@ -336,7 +211,7 @@ public:
   // General Callbacks.
   //
   virtual void scriptLog(spdlog::level::level_enum level, absl::string_view message);
-  virtual void setTickPeriod(std::chrono::milliseconds tick_period);
+  virtual WasmResult setTickPeriod(std::chrono::milliseconds tick_period);
   virtual uint64_t getCurrentTimeNanoseconds();
 
   //
@@ -378,19 +253,25 @@ public:
   virtual std::string getProtocol(StreamType type);
   virtual uint32_t getDestinationPort(StreamType type);
   virtual uint32_t getResponseCode(StreamType type);
+  virtual std::string getTlsVersion(StreamType type);
+  virtual absl::optional<bool> peerCertificatePresented(StreamType type);
+
+  // Generic resolver producing a serialized value
+  virtual WasmResult getSelectorExpression(absl::string_view path, std::string* result);
 
   // Metadata
   // When used with MetadataType::Request/Response refers to metadata with name "envoy.wasm": the
   // values are serialized ProtobufWkt::Struct Value
-  virtual std::string getMetadata(MetadataType type, absl::string_view key);
-  virtual void setMetadata(MetadataType type, absl::string_view key,
-                           absl::string_view serialized_proto_struct);
-  virtual PairsWithStringValues getMetadataPairs(MetadataType type);
+  virtual WasmResult getMetadata(MetadataType type, absl::string_view key, std::string* result);
+  virtual WasmResult setMetadata(MetadataType type, absl::string_view key,
+                                 absl::string_view serialized_proto_struct);
+  virtual WasmResult getMetadataPairs(MetadataType type, PairsWithStringValues* result);
   // Name is ignored when the type is not MetadataType::Request/Response: the values are serialized
   // ProtobufWkt::Struct
-  virtual std::string getMetadataStruct(MetadataType type, absl::string_view name);
-  virtual void setMetadataStruct(MetadataType type, absl::string_view key,
-                                 absl::string_view serialized_proto_struct);
+  virtual WasmResult getMetadataStruct(MetadataType type, absl::string_view name,
+                                       std::string* result);
+  virtual WasmResult setMetadataStruct(MetadataType type, absl::string_view key,
+                                       absl::string_view serialized_proto_struct);
 
   // Continue
   virtual void continueRequest() {
@@ -415,14 +296,16 @@ public:
   }
 
   // Shared Data
-  virtual std::pair<std::string, uint32_t> getSharedData(absl::string_view key);
-  virtual bool setSharedData(absl::string_view key, absl::string_view value, uint32_t cas);
+  virtual WasmResult getSharedData(absl::string_view key,
+                                   std::pair<std::string, uint32_t /* cas */>* data);
+  virtual WasmResult setSharedData(absl::string_view key, absl::string_view value, uint32_t cas);
 
   // Shared Queue
   virtual uint32_t registerSharedQueue(absl::string_view queue_name);
-  virtual uint32_t resolveSharedQueue(absl::string_view vm_id, absl::string_view queue_name);
-  virtual std::pair<std::string, bool> dequeueSharedQueue(uint32_t token);
-  virtual bool enqueueSharedQueue(uint32_t token, absl::string_view value);
+  virtual WasmResult resolveSharedQueue(absl::string_view vm_id, absl::string_view queue_name,
+                                        uint32_t* token);
+  virtual WasmResult dequeueSharedQueue(uint32_t token, std::string* data);
+  virtual WasmResult enqueueSharedQueue(uint32_t token, absl::string_view value);
 
   // Header/Trailer/Metadata Maps
   virtual void addHeaderMapValue(HeaderMapType type, absl::string_view key,
@@ -456,10 +339,10 @@ public:
     Histogram = 2,
     Max = 2,
   };
-  virtual uint32_t defineMetric(MetricType type, absl::string_view name);
-  virtual void incrementMetric(uint32_t metric_id, int64_t offset);
-  virtual void recordMetric(uint32_t metric_id, uint64_t value);
-  virtual uint64_t getMetric(uint32_t metric_id);
+  virtual WasmResult defineMetric(MetricType type, absl::string_view name, uint32_t* metric_id_ptr);
+  virtual WasmResult incrementMetric(uint32_t metric_id, int64_t offset);
+  virtual WasmResult recordMetric(uint32_t metric_id, uint64_t value);
+  virtual WasmResult getMetric(uint32_t metric_id, uint64_t* value_ptr);
 
   // gRPC
   // Returns a token which will be used with the corresponding onGrpc and grpc calls.
@@ -469,9 +352,10 @@ public:
                             const absl::optional<std::chrono::milliseconds>& timeout);
   virtual uint32_t grpcStream(const envoy::api::v2::core::GrpcService& grpc_service,
                               absl::string_view service_name, absl::string_view method_name);
-  virtual void grpcClose(uint32_t token);  // cancel on call, close on stream.
-  virtual void grpcCancel(uint32_t token); // cancel on call, reset on stream.
-  virtual void grpcSend(uint32_t token, absl::string_view message, bool end_stream); // stream only
+  virtual WasmResult grpcClose(uint32_t token);  // cancel on call, close on stream.
+  virtual WasmResult grpcCancel(uint32_t token); // cancel on call, reset on stream.
+  virtual WasmResult grpcSend(uint32_t token, absl::string_view message,
+                              bool end_stream); // stream only
 
   // Connection
   virtual bool isSsl();
@@ -505,10 +389,14 @@ protected:
   Http::HeaderMap* getMap(HeaderMapType type);
   const Http::HeaderMap* getConstMap(HeaderMapType type);
 
+  std::string makeLogPrefix() const;
+
   Wasm* wasm_;
   uint32_t id_;
-  uint32_t root_context_id_;  // 0 for roots and the general context.
-  const std::string root_id_; // set only in roots.
+  uint32_t root_context_id_;       // 0 for roots and the general context.
+  Context* root_context_{nullptr}; // set in all contexts.
+  const std::string root_id_;      // set only in roots.
+  std::string log_prefix_;
   bool destroyed_ = false;
 
   uint32_t next_http_call_token_ = 1;
@@ -546,21 +434,15 @@ protected:
   ProtobufWkt::Struct temporary_metadata_;
 };
 
-template <typename T> struct Global {
-  virtual ~Global() {}
-  virtual T get() PURE;
-  virtual void set(const T& t) PURE;
-};
-
 // Wasm execution instance. Manages the Envoy side of the Wasm interface.
 class Wasm : public Envoy::Server::Wasm,
              public ThreadLocal::ThreadLocalObject,
              public Logger::Loggable<Logger::Id::wasm>,
              public std::enable_shared_from_this<Wasm> {
 public:
-  Wasm(absl::string_view vm, absl::string_view id, absl::string_view initial_configuration,
+  Wasm(absl::string_view vm, absl::string_view id, absl::string_view vm_configuration,
        Upstream::ClusterManager& cluster_manager, Event::Dispatcher& dispatcher,
-       Stats::Scope& scope, const LocalInfo::LocalInfo& local_info,
+       Stats::Scope& scope, PluginDirection direction, const LocalInfo::LocalInfo& local_info,
        const envoy::api::v2::core::Metadata* listener_metadata,
        Stats::ScopeSharedPtr owned_scope = nullptr);
   Wasm(const Wasm& other, Event::Dispatcher& dispatcher);
@@ -568,11 +450,9 @@ public:
 
   bool initialize(const std::string& code, absl::string_view name, bool allow_precompiled);
   void configure(Context* root_context, absl::string_view configuration);
-  Context* start(absl::string_view root_id); // returns the root Context.
+  Context* start(absl::string_view root_id,
+                 absl::string_view vm_configuration); // returns the root Context.
 
-  const std::string& context_id_filter_state_data_name() {
-    return context_id_filter_state_data_name_;
-  }
   absl::string_view id() const { return id_; }
   WasmVm* wasmVm() const { return wasm_vm_.get(); }
   Context* vmContext() const { return vm_context_.get(); }
@@ -585,6 +465,7 @@ public:
   }
   Upstream::ClusterManager& clusterManager() const { return cluster_manager_; }
   Stats::Scope& scope() const { return scope_; }
+  PluginDirection direction() { return direction_; }
   const LocalInfo::LocalInfo& localInfo() { return local_info_; }
   const envoy::api::v2::core::Metadata* listenerMetadata() { return listener_metadata_; }
 
@@ -595,10 +476,10 @@ public:
   uint32_t allocContextId();
 
   const std::string& code() const { return code_; }
-  const std::string& initial_configuration() const { return initial_configuration_; }
+  const std::string& vm_configuration() const { return vm_configuration_; }
   bool allow_precompiled() const { return allow_precompiled_; }
-  void setInitialConfiguration(const std::string& initial_configuration) {
-    initial_configuration_ = initial_configuration;
+  void setInitialConfiguration(const std::string& vm_configuration) {
+    vm_configuration_ = vm_configuration;
   }
 
   //
@@ -619,6 +500,7 @@ public:
   bool copyToPointerSize(absl::string_view s, uint64_t ptr_ptr, uint64_t size_ptr);
   bool copyToPointerSize(const Buffer::Instance& buffer, uint64_t start, uint64_t length,
                          uint64_t ptr_ptr, uint64_t size_ptr);
+  template <typename T> bool setDatatype(uint64_t ptr, const T& t);
 
   // For testing.
   void setContext(Context* context) { contexts_[context->id()] = context; }
@@ -637,6 +519,8 @@ public:
     *emscripten_abi_minor_version = emscripten_abi_minor_version_;
     return true;
   }
+
+  void setErrno(int32_t err);
 
 private:
   friend class Context;
@@ -674,11 +558,11 @@ private:
   Upstream::ClusterManager& cluster_manager_;
   Event::Dispatcher& dispatcher_;
   Stats::Scope& scope_; // Either an inherited scope or owned_scope_ below.
+  const PluginDirection direction_;
   const LocalInfo::LocalInfo& local_info_;
   const envoy::api::v2::core::Metadata* listener_metadata_{};
   std::string id_;
-  std::string context_id_filter_state_data_name_;
-  uint32_t next_context_id_ = 0;
+  uint32_t next_context_id_ = 1; // 0 is reserved for the VM context.
   std::unique_ptr<WasmVm> wasm_vm_;
   std::shared_ptr<Context> vm_context_; // Context unrelated to any specific root or stream
                                         // (e.g. for global constructors).
@@ -690,43 +574,44 @@ private:
       owned_scope_; // When scope_ is not owned by a higher level (e.g. for WASM services).
   TimeSource& time_source_;
 
-  WasmCall1Int malloc_;
+  WasmCall1Word malloc_;
   WasmCall1Void free_;
+  WasmCall0Word __errno_location_;
 
   // Calls into the VM.
-  WasmContextCall2Void onStart_;
-  WasmContextCall2Void onConfigure_;
-  WasmContextCall0Void onTick_;
+  WasmCall5Void onStart_;
+  WasmCall3Void onConfigure_;
+  WasmCall1Void onTick_;
 
-  WasmContextCall1Void onCreate_;
+  WasmCall2Void onCreate_;
 
-  WasmContextCall0Int onRequestHeaders_;
-  WasmContextCall2Int onRequestBody_;
-  WasmContextCall0Int onRequestTrailers_;
-  WasmContextCall0Int onRequestMetadata_;
+  WasmCall1Word onRequestHeaders_;
+  WasmCall3Word onRequestBody_;
+  WasmCall1Word onRequestTrailers_;
+  WasmCall1Word onRequestMetadata_;
 
-  WasmContextCall0Int onResponseHeaders_;
-  WasmContextCall2Int onResponseBody_;
-  WasmContextCall0Int onResponseTrailers_;
-  WasmContextCall0Int onResponseMetadata_;
+  WasmCall1Word onResponseHeaders_;
+  WasmCall3Word onResponseBody_;
+  WasmCall1Word onResponseTrailers_;
+  WasmCall1Word onResponseMetadata_;
 
-  WasmContextCall7Void onHttpCallResponse_;
+  WasmCall8Void onHttpCallResponse_;
 
-  WasmContextCall3Void onGrpcReceive_;
-  WasmContextCall4Void onGrpcClose_;
-  WasmContextCall1Void onGrpcCreateInitialMetadata_;
-  WasmContextCall1Void onGrpcReceiveInitialMetadata_;
-  WasmContextCall1Void onGrpcReceiveTrailingMetadata_;
+  WasmCall4Void onGrpcReceive_;
+  WasmCall5Void onGrpcClose_;
+  WasmCall2Void onGrpcCreateInitialMetadata_;
+  WasmCall2Void onGrpcReceiveInitialMetadata_;
+  WasmCall2Void onGrpcReceiveTrailingMetadata_;
 
-  WasmContextCall1Void onQueueReady_;
+  WasmCall2Void onQueueReady_;
 
-  WasmContextCall0Void onDone_;
-  WasmContextCall0Void onLog_;
-  WasmContextCall0Void onDelete_;
+  WasmCall1Void onDone_;
+  WasmCall1Void onLog_;
+  WasmCall1Void onDelete_;
 
   // Used by the base_wasm to enable non-clonable thread local Wasm(s) to be constructed.
   std::string code_;
-  std::string initial_configuration_;
+  std::string vm_configuration_;
   bool allow_precompiled_ = false;
 
   bool is_emscripten_ = false;
@@ -748,6 +633,11 @@ private:
   std::unique_ptr<Global<double>> global_Infinity_;
 
   // Stats/Metrics
+  // TODO(jplevyak): replace the use of Stats::StatNameSet with something more efficient.
+  // By having a separate StatNameSet per Wasm we are duplicating all the strings but
+  // avoiding locks. Consider lock-free hash tables or pre-registering stats.
+  Stats::StatNameSet stat_name_set_;
+  absl::flat_hash_map<std::string, Stats::StatName> stat_names_;
   uint32_t next_counter_metric_id_ = kMetricTypeCounter;
   uint32_t next_gauge_metric_id_ = kMetricTypeGauge;
   uint32_t next_histogram_metric_id_ = kMetricTypeHistogram;
@@ -759,95 +649,6 @@ private:
 inline WasmVm* Context::wasmVm() const { return wasm_->wasmVm(); }
 inline Upstream::ClusterManager& Context::clusterManager() const { return wasm_->clusterManager(); }
 
-// Wasm VM instance. Provides the low level WASM interface.
-class WasmVm : public Logger::Loggable<Logger::Id::wasm> {
-public:
-  virtual ~WasmVm() {}
-  virtual absl::string_view vm() PURE;
-
-  // Whether or not the VM implementation supports cloning.
-  virtual bool clonable() PURE;
-  // Make a thread-specific copy. This may not be supported by the underlying VM system in which
-  // case it will return nullptr and the caller will need to create a new VM from scratch.
-  virtual std::unique_ptr<WasmVm> clone() PURE;
-
-  // Load the WASM code from a file. Return true on success.
-  virtual bool load(const std::string& code, bool allow_precompiled) PURE;
-  // Link to registered function.
-  virtual void link(absl::string_view debug_name, bool needs_emscripten) PURE;
-
-  // Set memory layout (start of dynamic heap base, etc.) in the VM.
-  virtual void setMemoryLayout(uint64_t stack_base, uint64_t heap_base,
-                               uint64_t heap_base_pointer) PURE;
-
-  // Call the 'start' function and initialize globals.
-  virtual void start(Context*) PURE;
-
-  // Get size of the currently allocated memory in the VM.
-  virtual uint64_t getMemorySize() PURE;
-  // Convert a block of memory in the VM to a string_view.
-  virtual absl::string_view getMemory(uint64_t pointer, uint64_t size) PURE;
-  // Convert a host pointer to memory in the VM into a VM "pointer" (an offset into the Memory).
-  virtual bool getMemoryOffset(void* host_pointer, uint64_t* vm_pointer) PURE;
-  // Set a block of memory in the VM, returns true on success, false if the pointer/size is invalid.
-  virtual bool setMemory(uint64_t pointer, uint64_t size, const void* data) PURE;
-  // Set a Word in the VM, returns true on success, false if the pointer is invalid.
-  virtual bool setWord(uint64_t pointer, uint64_t data) PURE;
-  // Make a new intrinsic module (e.g. for Emscripten support).
-  virtual void makeModule(absl::string_view name) PURE;
-
-  // Get the contents of the user section with the given name or "" if it does not exist.
-  virtual absl::string_view getUserSection(absl::string_view name) PURE;
-
-  // Get typed function exported by the WASM module.
-  virtual void getFunction(absl::string_view functionName, WasmCall0Void* f) PURE;
-  virtual void getFunction(absl::string_view functionName, WasmCall1Void* f) PURE;
-  virtual void getFunction(absl::string_view functionName, WasmCall2Void* f) PURE;
-  virtual void getFunction(absl::string_view functionName, WasmCall3Void* f) PURE;
-  virtual void getFunction(absl::string_view functionName, WasmCall4Void* f) PURE;
-  virtual void getFunction(absl::string_view functionName, WasmCall5Void* f) PURE;
-  virtual void getFunction(absl::string_view functionName, WasmCall8Void* f) PURE;
-  virtual void getFunction(absl::string_view functionName, WasmCall1Int* f) PURE;
-  virtual void getFunction(absl::string_view functionName, WasmCall3Int* f) PURE;
-
-  // Register typed callbacks exported by the host environment.
-#define REGISTER_CALLBACK(_t)                                                                      \
-  virtual void registerCallback(absl::string_view moduleName, absl::string_view functionName,      \
-                                _t f, typename ConvertFunctionTypeWordToUint32<_t>::type) PURE;
-  REGISTER_CALLBACK(WasmCallback0Void);
-  REGISTER_CALLBACK(WasmCallback1Void);
-  REGISTER_CALLBACK(WasmCallback2Void);
-  REGISTER_CALLBACK(WasmCallback3Void);
-  REGISTER_CALLBACK(WasmCallback4Void);
-  REGISTER_CALLBACK(WasmCallback5Void);
-  REGISTER_CALLBACK(WasmCallback8Void);
-  REGISTER_CALLBACK(WasmCallback0Int);
-  REGISTER_CALLBACK(WasmCallback1Int);
-  REGISTER_CALLBACK(WasmCallback2Int);
-  REGISTER_CALLBACK(WasmCallback3Int);
-  REGISTER_CALLBACK(WasmCallback4Int);
-  REGISTER_CALLBACK(WasmCallback5Int);
-  REGISTER_CALLBACK(WasmCallback6Int);
-  REGISTER_CALLBACK(WasmCallback7Int);
-  REGISTER_CALLBACK(WasmCallback8Int);
-  REGISTER_CALLBACK(WasmCallback9Int);
-  REGISTER_CALLBACK(WasmCallback_ZWl);
-  REGISTER_CALLBACK(WasmCallback_ZWm);
-  REGISTER_CALLBACK(WasmCallback_m);
-  REGISTER_CALLBACK(WasmCallback_mW);
-  REGISTER_CALLBACK(WasmCallback_jW);
-#undef REGISTER_CALLBACK
-
-  // Register typed value exported by the host environment.
-  virtual std::unique_ptr<Global<Word>> makeGlobal(absl::string_view module_name,
-                                                   absl::string_view name, Word initial_value) PURE;
-  virtual std::unique_ptr<Global<double>>
-  makeGlobal(absl::string_view module_name, absl::string_view name, double initial_value) PURE;
-};
-
-// Create a new low-level WASM VM of the give type (e.g. "envoy.wasm.vm.wavm").
-std::unique_ptr<WasmVm> createWasmVm(absl::string_view vm);
-
 // Create a high level Wasm VM with Envoy API support. Note: 'id' may be empty if this VM will not
 // be shared by APIs (e.g. HTTP Filter + AccessLog).
 std::shared_ptr<Wasm> createWasm(absl::string_view vm_id,
@@ -855,7 +656,7 @@ std::shared_ptr<Wasm> createWasm(absl::string_view vm_id,
                                  absl::string_view root_id,
                                  Upstream::ClusterManager& cluster_manager,
                                  Event::Dispatcher& dispatcher, Api::Api& api, Stats::Scope& scope,
-                                 const LocalInfo::LocalInfo& local_info,
+                                 PluginDirection direction, const LocalInfo::LocalInfo& local_info,
                                  const envoy::api::v2::core::Metadata* listener_metadata,
                                  Stats::ScopeSharedPtr owned_scope);
 
@@ -864,14 +665,13 @@ std::shared_ptr<Wasm> createThreadLocalWasm(Wasm& base_wasm, absl::string_view r
                                             absl::string_view configuration,
                                             Event::Dispatcher& dispatcher);
 
-std::shared_ptr<Wasm>
-createWasmForTesting(absl::string_view vm_id, const envoy::config::wasm::v2::VmConfig& vm_config,
-                     absl::string_view root_id, // e.g. filter instance id
-                     Upstream::ClusterManager& cluster_manager, Event::Dispatcher& dispatcher,
-                     Api::Api& api, Stats::Scope& scope, const LocalInfo::LocalInfo& local_info,
-                     const envoy::api::v2::core::Metadata* listener_metadata,
-                     Stats::ScopeSharedPtr scope_ptr,
-                     std::unique_ptr<Context> root_context_for_testing);
+std::shared_ptr<Wasm> createWasmForTesting(
+    absl::string_view vm_id, const envoy::config::wasm::v2::VmConfig& vm_config,
+    absl::string_view root_id, // e.g. filter instance id
+    Upstream::ClusterManager& cluster_manager, Event::Dispatcher& dispatcher, Api::Api& api,
+    Stats::Scope& scope, PluginDirection direction, const LocalInfo::LocalInfo& local_info,
+    const envoy::api::v2::core::Metadata* listener_metadata, Stats::ScopeSharedPtr scope_ptr,
+    std::unique_ptr<Context> root_context_for_testing);
 
 // Get an existing ThreadLocal VM matching 'vm_id'.
 std::shared_ptr<Wasm> getThreadLocalWasm(absl::string_view vm_id, absl::string_view root_id,
@@ -880,29 +680,25 @@ std::shared_ptr<Wasm> getThreadLocalWasmOrNull(absl::string_view vm_id);
 
 uint32_t resolveQueueForTest(absl::string_view vm_id, absl::string_view queue_name);
 
-class WasmException : public EnvoyException {
-public:
-  using EnvoyException::EnvoyException;
-};
+inline Context::Context()
+    : wasm_(nullptr), id_(0), root_context_id_(0), root_context_(this), root_id_("") {}
 
-class WasmVmException : public EnvoyException {
-public:
-  using EnvoyException::EnvoyException;
-};
-
-inline Context::Context() : wasm_(nullptr), id_(0), root_context_id_(0), root_id_("") {}
-
-inline Context::Context(Wasm* wasm) : wasm_(wasm), id_(0), root_context_id_(0), root_id_("") {
+inline Context::Context(Wasm* wasm)
+    : wasm_(wasm), id_(0), root_context_id_(0), root_context_(this), root_id_(""),
+      log_prefix_(makeLogPrefix()) {
   wasm_->contexts_[id_] = this;
 }
 
 inline Context::Context(Wasm* wasm, uint32_t root_context_id)
-    : wasm_(wasm), id_(wasm->allocContextId()), root_context_id_(root_context_id), root_id_("") {
+    : wasm_(wasm), id_(wasm->allocContextId()), root_context_id_(root_context_id), root_id_(""),
+      log_prefix_(makeLogPrefix()) {
   wasm_->contexts_[id_] = this;
+  root_context_ = wasm_->contexts_[root_context_id_];
 }
 
 inline Context::Context(Wasm* wasm, absl::string_view root_id)
-    : wasm_(wasm), id_(wasm->allocContextId()), root_context_id_(0), root_id_(root_id) {
+    : wasm_(wasm), id_(wasm->allocContextId()), root_context_id_(0), root_context_(this),
+      root_id_(root_id), log_prefix_(makeLogPrefix()) {
   wasm_->contexts_[id_] = this;
 }
 
@@ -912,7 +708,7 @@ inline Context::~Context() {
     wasm_->contexts_.erase(id_);
 }
 
-inline absl::string_view Context::root_id() {
+inline absl::string_view Context::root_id() const {
   if (root_context_id_) {
     return wasm_->getContext(root_context_id_)->root_id_;
   } else {
@@ -922,9 +718,15 @@ inline absl::string_view Context::root_id() {
 
 inline void* Wasm::allocMemory(uint64_t size, uint64_t* address) {
   Word a = malloc_(vmContext(), size);
+  if (!a.u64) {
+    throw WasmException("malloc_ returns nullptr (OOM)");
+  }
+  auto memory = wasm_vm_->getMemory(a, size);
+  if (!memory) {
+    throw WasmException("malloc_ returned illegal address");
+  }
   *address = a.u64;
-  // Note: this can throw a WASM exception.
-  return const_cast<void*>(reinterpret_cast<const void*>(wasm_vm_->getMemory(a, size).data()));
+  return const_cast<void*>(reinterpret_cast<const void*>(memory.value().data()));
 }
 
 inline void Wasm::freeMemoryOffset(uint64_t address) { free_(vmContext(), address); }
@@ -985,10 +787,10 @@ inline bool Wasm::copyToPointerSize(absl::string_view s, uint64_t ptr_ptr, uint6
     }
     memcpy(p, s.data(), size);
   }
-  if (!wasm_vm_->setWord(ptr_ptr, pointer)) {
+  if (!wasm_vm_->setWord(ptr_ptr, Word(pointer))) {
     return false;
   }
-  if (!wasm_vm_->setWord(size_ptr, size)) {
+  if (!wasm_vm_->setWord(size_ptr, Word(size))) {
     return false;
   }
   return true;
@@ -1026,25 +828,33 @@ inline bool Wasm::copyToPointerSize(const Buffer::Instance& buffer, uint64_t sta
     s = 0;
     p += ll;
   }
-  if (!wasm_vm_->setWord(ptr_ptr, pointer)) {
+  if (!wasm_vm_->setWord(ptr_ptr, Word(pointer))) {
     return false;
   }
-  if (!wasm_vm_->setWord(size_ptr, length)) {
+  if (!wasm_vm_->setWord(size_ptr, Word(length))) {
     return false;
   }
   return true;
 }
 
-extern thread_local Envoy::Extensions::Common::Wasm::Context* current_context_;
+template <typename T> inline bool Wasm::setDatatype(uint64_t ptr, const T& t) {
+  return wasm_vm_->setMemory(ptr, sizeof(T), &t);
+}
 
-struct SaveRestoreContext {
-  explicit SaveRestoreContext(Context* context) {
-    saved_context = current_context_;
-    current_context_ = context;
+inline PluginDirection
+pluginDirectionFromTrafficDirection(envoy::api::v2::core::TrafficDirection direction) {
+  switch (direction) {
+  case envoy::api::v2::core::TrafficDirection::UNSPECIFIED:
+    return PluginDirection::Unspecified;
+  case envoy::api::v2::core::TrafficDirection::INBOUND:
+    return PluginDirection::Inbound;
+  case envoy::api::v2::core::TrafficDirection::OUTBOUND:
+    return PluginDirection::Outbound;
+  default:
+    ASSERT(!"Bad envoy::api::v2::core::TrafficDirection");
+    NOT_REACHED_GCOVR_EXCL_LINE;
   }
-  ~SaveRestoreContext() { current_context_ = saved_context; }
-  Context* saved_context;
-};
+}
 
 } // namespace Wasm
 } // namespace Common

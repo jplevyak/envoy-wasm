@@ -248,7 +248,7 @@ ServerConnection::ServerConnection(const std::string& name, uint32_t id,
   switch (http_type) {
   case Http::CodecClient::Type::HTTP1:
     http_connection_ = std::make_unique<Http::Http1::ServerConnectionImpl>(
-        network_connection, *this, Http::Http1Settings(), max_request_headers_kb);
+        network_connection, scope, *this, Http::Http1Settings(), max_request_headers_kb);
     break;
   case Http::CodecClient::Type::HTTP2: {
     Http::Http2Settings settings;
@@ -263,7 +263,7 @@ ServerConnection::ServerConnection(const std::string& name, uint32_t id,
               "defaulting to HTTP1",
               name_, id_, static_cast<int>(http_type) + 1);
     http_connection_ = std::make_unique<Http::Http1::ServerConnectionImpl>(
-        network_connection, *this, Http::Http1Settings(), max_request_headers_kb);
+        network_connection, scope, *this, Http::Http1Settings(), max_request_headers_kb);
     break;
   }
 }
@@ -576,6 +576,8 @@ uint32_t Server::perConnectionBufferLimitBytes() const { return connection_buffe
 std::chrono::milliseconds Server::listenerFiltersTimeout() const {
   return std::chrono::milliseconds(0);
 }
+
+bool Server::continueOnListenerFiltersTimeout() const { return false; }
 
 Stats::Scope& Server::listenerScope() { return stats_; }
 

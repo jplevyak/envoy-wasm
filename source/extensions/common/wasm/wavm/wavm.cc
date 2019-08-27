@@ -1,22 +1,14 @@
 #include "extensions/common/wasm/wavm/wavm.h"
 
-#include <stdint.h>
-#include <stdio.h>
-
-#include <atomic>
-#include <fstream>
+#include <iostream>
 #include <memory>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
-#include "envoy/common/exception.h"
-#include "envoy/server/wasm.h"
-
 #include "common/common/assert.h"
 #include "common/common/logger.h"
 
-#include "extensions/common/wasm/wasm.h"
 #include "extensions/common/wasm/well_known_names.h"
 
 #include "WAVM/Emscripten/Emscripten.h"
@@ -105,17 +97,16 @@ const Logger::Id wasmId = Logger::Id::wasm;
                                           });                                                      \
   } while (0)
 
-#define CALL_WITH_CONTEXT_RETURN(_x, _context, _type, _member)                                     \
+#define CALL_WITH_CONTEXT_RETURN(_x, _context, _T, _member)                                        \
   do {                                                                                             \
     SaveRestoreContext _saved_context(static_cast<Context*>(_context));                            \
-    _type _return_value;                                                                           \
-    WAVM::Runtime::catchRuntimeExceptions(                                                         \
-        [&] { _return_value = static_cast<_type>(_x[0]._member); },                                \
-        [&](WAVM::Runtime::Exception* exception) {                                                 \
-          auto description = describeException(exception);                                         \
-          destroyException(exception);                                                             \
-          throw WasmException(description);                                                        \
-        });                                                                                        \
+    _T _return_value;                                                                              \
+    WAVM::Runtime::catchRuntimeExceptions([&] { _return_value = static_cast<_T>(_x[0]._member); }, \
+                                          [&](WAVM::Runtime::Exception* exception) {               \
+                                            auto description = describeException(exception);       \
+                                            destroyException(exception);                           \
+                                            throw WasmException(description);                      \
+                                          });                                                      \
     return _return_value;                                                                          \
   } while (0)
 
@@ -229,62 +220,33 @@ struct Wavm : public WasmVm {
   void link(absl::string_view debug_name, bool needs_emscripten) override;
   void start(Context* context) override;
   uint64_t getMemorySize() override;
-  absl::string_view getMemory(uint64_t pointer, uint64_t size) override;
+  absl::optional<absl::string_view> getMemory(uint64_t pointer, uint64_t size) override;
   bool getMemoryOffset(void* host_pointer, uint64_t* vm_pointer) override;
   bool setMemory(uint64_t pointer, uint64_t size, const void* data) override;
-  bool setWord(uint64_t pointer, uint64_t data) override;
+  bool setWord(uint64_t pointer, Word data) override;
   void makeModule(absl::string_view name) override;
   absl::string_view getUserSection(absl::string_view name) override;
 
   void getInstantiatedGlobals();
 
-#define _GET_FUNCTION(_type)                                                                       \
-  void getFunction(absl::string_view functionName, _type* f) override {                            \
+#define _GET_FUNCTION(_T)                                                                          \
+  void getFunction(absl::string_view functionName, _T* f) override {                               \
     getFunctionWavm(this, functionName, f);                                                        \
   };
-  _GET_FUNCTION(WasmCall0Void);
-  _GET_FUNCTION(WasmCall1Void);
-  _GET_FUNCTION(WasmCall2Void);
-  _GET_FUNCTION(WasmCall3Void);
-  _GET_FUNCTION(WasmCall4Void);
-  _GET_FUNCTION(WasmCall5Void);
-  _GET_FUNCTION(WasmCall8Void);
-  _GET_FUNCTION(WasmCall1Int);
-  _GET_FUNCTION(WasmCall3Int);
+  FOR_ALL_WASM_VM_EXPORTS(_GET_FUNCTION)
 #undef _GET_FUNCTION
 
-#define _REGISTER_CALLBACK(_type)                                                                  \
-  void registerCallback(absl::string_view moduleName, absl::string_view functionName, _type,       \
-                        typename ConvertFunctionTypeWordToUint32<_type>::type f) override {        \
+#define _REGISTER_CALLBACK(_T)                                                                     \
+  void registerCallback(absl::string_view moduleName, absl::string_view functionName, _T,          \
+                        typename ConvertFunctionTypeWordToUint32<_T>::type f) override {           \
     registerCallbackWavm(this, moduleName, functionName, f);                                       \
   };
-  _REGISTER_CALLBACK(WasmCallback0Void);
-  _REGISTER_CALLBACK(WasmCallback1Void);
-  _REGISTER_CALLBACK(WasmCallback2Void);
-  _REGISTER_CALLBACK(WasmCallback3Void);
-  _REGISTER_CALLBACK(WasmCallback4Void);
-  _REGISTER_CALLBACK(WasmCallback5Void);
-  _REGISTER_CALLBACK(WasmCallback8Void);
-  _REGISTER_CALLBACK(WasmCallback0Int);
-  _REGISTER_CALLBACK(WasmCallback1Int);
-  _REGISTER_CALLBACK(WasmCallback2Int);
-  _REGISTER_CALLBACK(WasmCallback3Int);
-  _REGISTER_CALLBACK(WasmCallback4Int);
-  _REGISTER_CALLBACK(WasmCallback5Int);
-  _REGISTER_CALLBACK(WasmCallback6Int);
-  _REGISTER_CALLBACK(WasmCallback7Int);
-  _REGISTER_CALLBACK(WasmCallback8Int);
-  _REGISTER_CALLBACK(WasmCallback9Int);
-  _REGISTER_CALLBACK(WasmCallback_ZWl);
-  _REGISTER_CALLBACK(WasmCallback_ZWm);
-  _REGISTER_CALLBACK(WasmCallback_m);
-  _REGISTER_CALLBACK(WasmCallback_jW);
-  _REGISTER_CALLBACK(WasmCallback_mW);
+  FOR_ALL_WASM_VM_IMPORTS(_REGISTER_CALLBACK)
 #undef _REGISTER_CALLBACK
 
-#define _REGISTER_GLOBAL(_type)                                                                    \
-  std::unique_ptr<Global<_type>> makeGlobal(absl::string_view moduleName, absl::string_view name,  \
-                                            _type initialValue) override {                         \
+#define _REGISTER_GLOBAL(_T)                                                                       \
+  std::unique_ptr<Global<_T>> makeGlobal(absl::string_view moduleName, absl::string_view name,     \
+                                         _T initialValue) override {                               \
     return makeGlobalWavm(this, moduleName, name, initialValue);                                   \
   };
   _REGISTER_GLOBAL(Word);
@@ -330,7 +292,7 @@ std::unique_ptr<WasmVm> Wavm::clone() {
   auto wavm = std::make_unique<Wavm>();
   wavm->compartment_ = WAVM::Runtime::cloneCompartment(compartment_);
   wavm->memory_ = WAVM::Runtime::remapToClonedCompartment(memory_, wavm->compartment_);
-  memory_base_ = WAVM::Runtime::getMemoryBaseAddress(memory_);
+  wavm->memory_base_ = WAVM::Runtime::getMemoryBaseAddress(wavm->memory_);
   wavm->context_ = WAVM::Runtime::createContext(wavm->compartment_);
   for (auto& p : intrinsicModuleInstances_) {
     wavm->intrinsicModuleInstances_.emplace(
@@ -438,10 +400,12 @@ void Wavm::start(Context* context) {
 
 uint64_t Wavm::getMemorySize() { return WAVM::Runtime::getMemoryNumPages(memory_) * wasmPageSize; }
 
-absl::string_view Wavm::getMemory(uint64_t pointer, uint64_t size) {
-  return {reinterpret_cast<char*>(
-              WAVM::Runtime::memoryArrayPtr<U8>(memory_, pointer, static_cast<U64>(size))),
-          static_cast<size_t>(size)};
+absl::optional<absl::string_view> Wavm::getMemory(uint64_t pointer, uint64_t size) {
+  auto memoryNumBytes = WAVM::Runtime::getMemoryNumPages(memory_) * wasmPageSize;
+  if (pointer + size > memoryNumBytes) {
+    return absl::nullopt;
+  }
+  return absl::string_view(reinterpret_cast<char*>(memory_base_ + pointer), size);
 }
 
 bool Wavm::getMemoryOffset(void* host_pointer, uint64_t* vm_pointer) {
@@ -457,26 +421,18 @@ bool Wavm::getMemoryOffset(void* host_pointer, uint64_t* vm_pointer) {
 }
 
 bool Wavm::setMemory(uint64_t pointer, uint64_t size, const void* data) {
-  auto p = reinterpret_cast<char*>(
-      WAVM::Runtime::memoryArrayPtr<U8>(memory_, pointer, static_cast<U64>(size)));
-  if (p) {
-    memcpy(p, data, size);
-    return true;
-  } else {
+  auto memoryNumBytes = WAVM::Runtime::getMemoryNumPages(memory_) * wasmPageSize;
+  if (pointer + size > memoryNumBytes) {
     return false;
   }
+  auto p = reinterpret_cast<char*>(memory_base_ + pointer);
+  memcpy(p, data, size);
+  return true;
 }
 
-bool Wavm::setWord(uint64_t pointer, uint64_t data) {
-  auto p = reinterpret_cast<char*>(
-      WAVM::Runtime::memoryArrayPtr<U8>(memory_, pointer, static_cast<U64>(sizeof(uint32_t))));
-  if (p) {
-    uint32_t data32 = static_cast<uint32_t>(data);
-    memcpy(p, &data32, sizeof(uint32_t));
-    return true;
-  } else {
-    return false;
-  }
+bool Wavm::setWord(uint64_t pointer, Word data) {
+  uint32_t data32 = data.u32();
+  return setMemory(pointer, sizeof(uint32_t), &data32);
 }
 
 absl::string_view Wavm::getUserSection(absl::string_view name) {

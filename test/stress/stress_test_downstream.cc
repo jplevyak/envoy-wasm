@@ -205,9 +205,9 @@ public:
                         ClientCloseCallback& close_callback,
                         std::shared_ptr<Event::Dispatcher>& dispatcher,
                         Network::ClientConnectionPtr&& network_connection)
-      : ClientConnection(client, id, connect_callback, close_callback, dispatcher),
+      : ClientConnection(client, id, connect_callback, close_callback, dispatcher), stats_(),
         network_connection_(std::move(network_connection)),
-        http_connection_(*network_connection_, *this),
+        http_connection_(*network_connection_, stats_, *this),
         read_filter_{std::make_shared<HttpClientReadFilter>(client.name(), id, http_connection_)} {
     network_connection_->addReadFilter(read_filter_);
     network_connection_->addConnectionCallbacks(*this);
@@ -221,6 +221,7 @@ public:
   Http::ClientConnection& httpConnection() override { return http_connection_; }
 
 private:
+  Stats::IsolatedStoreImpl stats_;
   Network::ClientConnectionPtr network_connection_;
   Http::Http1::ClientConnectionImpl http_connection_;
   HttpClientReadFilterSharedPtr read_filter_;

@@ -4,22 +4,32 @@
 #include "proxy_wasm_intrinsics.h"
 
 // Test the low level interface.
-extern "C" EMSCRIPTEN_KEEPALIVE void proxy_onStart(uint32_t, uint32_t, uint32_t) {
-  auto c = defineMetric(MetricType::Counter, "test_counter");
-  auto g = defineMetric(MetricType::Gauge, "test_gauges");
-  auto h = defineMetric(MetricType::Histogram, "test_histogram");
+extern "C" EMSCRIPTEN_KEEPALIVE void proxy_onStart(uint32_t, uint32_t, uint32_t, uint32_t,
+                                                   uint32_t) {
+  uint32_t c, g, h;
+  CHECK_RESULT(defineMetric(MetricType::Counter, "test_counter", &c));
+  CHECK_RESULT(defineMetric(MetricType::Gauge, "test_gauges", &g));
+  CHECK_RESULT(defineMetric(MetricType::Histogram, "test_histogram", &h));
 
-  incrementMetric(c, 1);
-  recordMetric(g, 2);
-  recordMetric(h, 3);
+  CHECK_RESULT(incrementMetric(c, 1));
+  CHECK_RESULT(recordMetric(g, 2));
+  CHECK_RESULT(recordMetric(h, 3));
 
-  logTrace(std::string("get counter = ") + std::to_string(getMetric(c)));
-  incrementMetric(c, 1);
-  logDebug(std::string("get counter = ") + std::to_string(getMetric(c)));
-  recordMetric(c, 3);
-  logInfo(std::string("get counter = ") + std::to_string(getMetric(c)));
-  logWarn(std::string("get gauge = ") + std::to_string(getMetric(g)));
-  logError(std::string("get histogram = ") + std::to_string(getMetric(h)));
+  uint64_t value;
+  CHECK_RESULT(getMetric(c, &value));
+  logTrace(std::string("get counter = ") + std::to_string(value));
+  CHECK_RESULT(incrementMetric(c, 1));
+  CHECK_RESULT(getMetric(c, &value));
+  logDebug(std::string("get counter = ") + std::to_string(value));
+  CHECK_RESULT(recordMetric(c, 3));
+  CHECK_RESULT(getMetric(c, &value));
+  logInfo(std::string("get counter = ") + std::to_string(value));
+  CHECK_RESULT(getMetric(g, &value));
+  logWarn(std::string("get gauge = ") + std::to_string(value));
+  // Get on histograms is not suppoorted.
+  if (getMetric(h, &value) != WasmResult::Ok) {
+    logError(std::string("get histogram = Unsupported"));
+  }
 }
 
 // Test the higher level interface.
@@ -69,7 +79,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE void proxy_onLog(uint32_t /* context_zero */) {
 
   h->record(3, 7, "test_tag", true);
   auto base_h = Counter<int>::New("test_histogram", "int_tag");
-  auto complete_h = base_h->resolveAndExtend<std::string, bool>(7, "string_tag", "bool_tag");
+  auto complete_h = base_h->extendAndResolve<std::string, bool>(7, "string_tag", "bool_tag");
   auto simple_h = complete_h->resolve("test_tag", true);
   logError(std::string("h_id = ") + complete_h->nameFromIdSlow(simple_h.metric_id));
 
@@ -81,6 +91,8 @@ extern "C" EMSCRIPTEN_KEEPALIVE void proxy_onLog(uint32_t /* context_zero */) {
   stack_g.record(2, "stack_test_tag1", "test_tag2");
   logError(std::string("stack_g = ") + std::to_string(stack_g.get("stack_test_tag1", "test_tag2")));
 
-  Histogram<int, std::string, bool> stack_h("test_histogram", "int_tag", "string_tag", "bool_tag");
-  stack_h.record(3, 7, "stack_test_tag", true);
+  StringView int_tag = "int_tag";
+  Histogram<int, std::string, bool> stack_h("test_histogram", int_tag, "string_tag", "bool_tag");
+  StringView stack_test_tag = "stack_test_tag";
+  stack_h.record(3, 7, stack_test_tag, true);
 }

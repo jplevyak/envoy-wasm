@@ -672,8 +672,8 @@ Http::Code AdminImpl::handlerLogging(absl::string_view url, Http::HeaderMap&,
     response.add("usage: /logging?<name>=<level> (change single level)\n");
     response.add("usage: /logging?level=<level> (change all levels)\n");
     response.add("levels: ");
-    for (size_t i = 0; i < ARRAY_SIZE(spdlog::level::level_string_views); i++) {
-      response.add(fmt::format("{} ", spdlog::level::level_string_views[i]));
+    for (auto level_string_view : spdlog::level::level_string_views) {
+      response.add(fmt::format("{} ", level_string_view));
     }
 
     response.add("\n");
@@ -833,6 +833,12 @@ std::string PrometheusStatsFormatter::formattedTags(const std::vector<Stats::Tag
 }
 
 std::string PrometheusStatsFormatter::metricName(const std::string& extractedName) {
+  // Offer a way to opt out of automatic namespacing.
+  // If metric name starts with "_" it will be trimmed but not namespaced.
+  // It is the responsibility of the metric creator to ensure proper namespacing.
+  if (extractedName.size() > 1 && extractedName[0] == '_') {
+    return sanitizeName(extractedName.substr(1));
+  }
   // Add namespacing prefix to avoid conflicts, as per best practice:
   // https://prometheus.io/docs/practices/naming/#metric-names
   // Also, naming conventions on https://prometheus.io/docs/concepts/data_model/
@@ -1242,11 +1248,10 @@ AdminImpl::AdminImpl(const std::string& profile_path, Server::Instance& server)
 
 Http::ServerConnectionPtr AdminImpl::createCodec(Network::Connection& connection,
                                                  const Buffer::Instance& data,
-                                                 Http::ServerConnectionCallbacks& callbacks,
-                                                 const bool strict_header_validation) {
+                                                 Http::ServerConnectionCallbacks& callbacks) {
   return Http::ConnectionManagerUtility::autoCreateCodec(
       connection, data, callbacks, server_.stats(), Http::Http1Settings(), Http::Http2Settings(),
-      maxRequestHeadersKb(), strict_header_validation);
+      maxRequestHeadersKb());
 }
 
 bool AdminImpl::createNetworkFilterChain(Network::Connection& connection,

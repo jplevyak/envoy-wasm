@@ -1,26 +1,15 @@
 #include "extensions/common/wasm/v8/v8.h"
 
-#include <stdint.h>
-#include <stdio.h>
-
-#include <atomic>
-#include <fstream>
 #include <memory>
 #include <utility>
 #include <vector>
 
-#include "envoy/common/exception.h"
-#include "envoy/server/wasm.h"
-
 #include "common/common/assert.h"
-#include "common/common/logger.h"
 
-#include "extensions/common/wasm/wasm.h"
 #include "extensions/common/wasm/well_known_names.h"
 
+#include "absl/container/flat_hash_map.h"
 #include "absl/strings/match.h"
-#include "absl/types/span.h"
-#include "absl/utility/utility.h"
 #include "wasm-api/wasm.hh"
 
 namespace Envoy {
@@ -38,7 +27,7 @@ struct FuncData {
   FuncData(std::string name) : name(name) {}
 
   std::string name;
-  wasm::own<wasm::Func*> callback;
+  wasm::own<wasm::Func> callback;
   void* raw_func;
 };
 
@@ -67,10 +56,10 @@ public:
   void start(Context* context) override;
 
   uint64_t getMemorySize() override;
-  absl::string_view getMemory(uint64_t pointer, uint64_t size) override;
+  absl::optional<absl::string_view> getMemory(uint64_t pointer, uint64_t size) override;
   bool getMemoryOffset(void* host_pointer, uint64_t* vm_pointer) override;
   bool setMemory(uint64_t pointer, uint64_t size, const void* data) override;
-  bool setWord(uint64_t pointer, uint64_t word) override;
+  bool setWord(uint64_t pointer, Word word) override;
 
 #define _REGISTER_HOST_GLOBAL(_type)                                                               \
   std::unique_ptr<Global<_type>> makeGlobal(absl::string_view moduleName, absl::string_view name,  \
@@ -86,43 +75,14 @@ public:
                         typename ConvertFunctionTypeWordToUint32<_type>::type f) override {        \
     registerHostFunctionImpl(moduleName, functionName, f);                                         \
   };
-  _REGISTER_HOST_FUNCTION(WasmCallback0Void);
-  _REGISTER_HOST_FUNCTION(WasmCallback1Void);
-  _REGISTER_HOST_FUNCTION(WasmCallback2Void);
-  _REGISTER_HOST_FUNCTION(WasmCallback3Void);
-  _REGISTER_HOST_FUNCTION(WasmCallback4Void);
-  _REGISTER_HOST_FUNCTION(WasmCallback5Void);
-  _REGISTER_HOST_FUNCTION(WasmCallback8Void);
-  _REGISTER_HOST_FUNCTION(WasmCallback0Int);
-  _REGISTER_HOST_FUNCTION(WasmCallback1Int);
-  _REGISTER_HOST_FUNCTION(WasmCallback2Int);
-  _REGISTER_HOST_FUNCTION(WasmCallback3Int);
-  _REGISTER_HOST_FUNCTION(WasmCallback4Int);
-  _REGISTER_HOST_FUNCTION(WasmCallback5Int);
-  _REGISTER_HOST_FUNCTION(WasmCallback6Int);
-  _REGISTER_HOST_FUNCTION(WasmCallback7Int);
-  _REGISTER_HOST_FUNCTION(WasmCallback8Int);
-  _REGISTER_HOST_FUNCTION(WasmCallback9Int);
-  _REGISTER_HOST_FUNCTION(WasmCallback_ZWl);
-  _REGISTER_HOST_FUNCTION(WasmCallback_ZWm);
-  _REGISTER_HOST_FUNCTION(WasmCallback_m);
-  _REGISTER_HOST_FUNCTION(WasmCallback_jW);
-  _REGISTER_HOST_FUNCTION(WasmCallback_mW);
+  FOR_ALL_WASM_VM_IMPORTS(_REGISTER_HOST_FUNCTION)
 #undef _REGISTER_HOST_FUNCTION
 
 #define _GET_MODULE_FUNCTION(_type)                                                                \
   void getFunction(absl::string_view functionName, _type* f) override {                            \
     getModuleFunctionImpl(functionName, f);                                                        \
   };
-  _GET_MODULE_FUNCTION(WasmCall0Void);
-  _GET_MODULE_FUNCTION(WasmCall1Void);
-  _GET_MODULE_FUNCTION(WasmCall2Void);
-  _GET_MODULE_FUNCTION(WasmCall3Void);
-  _GET_MODULE_FUNCTION(WasmCall4Void);
-  _GET_MODULE_FUNCTION(WasmCall5Void);
-  _GET_MODULE_FUNCTION(WasmCall8Void);
-  _GET_MODULE_FUNCTION(WasmCall1Int);
-  _GET_MODULE_FUNCTION(WasmCall3Int);
+  FOR_ALL_WASM_VM_EXPORTS(_GET_MODULE_FUNCTION)
 #undef _GET_MODULE_FUNCTION
 
 private:
@@ -152,15 +112,15 @@ private:
                              std::function<R(Context*, Args...)>* function);
 
   wasm::vec<byte_t> source_ = wasm::vec<byte_t>::invalid();
-  wasm::own<wasm::Store*> store_;
-  wasm::own<wasm::Module*> module_;
-  wasm::own<wasm::Instance*> instance_;
-  wasm::own<wasm::Memory*> memory_;
-  wasm::own<wasm::Table*> table_;
+  wasm::own<wasm::Store> store_;
+  wasm::own<wasm::Module> module_;
+  wasm::own<wasm::Instance> instance_;
+  wasm::own<wasm::Memory> memory_;
+  wasm::own<wasm::Table> table_;
 
-  absl::flat_hash_map<std::string, wasm::own<wasm::Global*>> host_globals_;
+  absl::flat_hash_map<std::string, wasm::own<wasm::Global>> host_globals_;
   absl::flat_hash_map<std::string, FuncDataPtr> host_functions_;
-  absl::flat_hash_map<std::string, wasm::own<wasm::Func*>> module_functions_;
+  absl::flat_hash_map<std::string, wasm::own<wasm::Func>> module_functions_;
 
   uint32_t memory_stack_base_;
   uint32_t memory_heap_base_;
@@ -190,7 +150,7 @@ static const char* printValKind(wasm::ValKind kind) {
   }
 }
 
-static std::string printValTypes(const wasm::vec<wasm::ValType*>& types) {
+static std::string printValTypes(const wasm::ownvec<wasm::ValType>& types) {
   if (types.size() == 0) {
     return "void";
   }
@@ -206,8 +166,8 @@ static std::string printValTypes(const wasm::vec<wasm::ValType*>& types) {
   return s;
 }
 
-static bool equalValTypes(const wasm::vec<wasm::ValType*>& left,
-                          const wasm::vec<wasm::ValType*>& right) {
+static bool equalValTypes(const wasm::ownvec<wasm::ValType>& left,
+                          const wasm::ownvec<wasm::ValType>& right) {
   if (left.size() != right.size()) {
     return false;
   }
@@ -262,7 +222,7 @@ template <typename T> struct V8ProxyForGlobal : Global<T> {
 
 template <typename T, std::size_t... I>
 constexpr auto convertArgsTupleToValTypesImpl(absl::index_sequence<I...>) {
-  return wasm::vec<wasm::ValType*>::make(
+  return wasm::ownvec<wasm::ValType>::make(
       wasm::ValType::make(convertArgToValKind<typename std::tuple_element<I, T>::type>())...);
 }
 
@@ -436,7 +396,7 @@ void V8::link(absl::string_view debug_name, bool needs_emscripten) {
   for (size_t i = 0; i < export_types.size(); i++) {
     absl::string_view name(export_types[i]->name().get(), export_types[i]->name().size());
     auto export_type = export_types[i]->type();
-    auto export_item = exports[i];
+    auto export_item = exports[i].get();
     ASSERT(export_type->kind() == export_item->kind());
 
     switch (export_type->kind()) {
@@ -534,18 +494,22 @@ uint64_t V8::getMemorySize() {
   return memory_->data_size();
 }
 
-absl::string_view V8::getMemory(uint64_t pointer, uint64_t size) {
+absl::optional<absl::string_view> V8::getMemory(uint64_t pointer, uint64_t size) {
   ENVOY_LOG(trace, "[wasm] getMemory({}, {})", pointer, size);
   ASSERT(memory_ != nullptr);
-  RELEASE_ASSERT(pointer + size <= memory_->data_size(), "");
+  if (pointer + size > memory_->data_size()) {
+    return absl::nullopt;
+  }
   return absl::string_view(memory_->data() + pointer, size);
 }
 
 bool V8::getMemoryOffset(void* host_pointer, uint64_t* vm_pointer) {
   ENVOY_LOG(trace, "[wasm] getMemoryOffset({})", host_pointer);
   ASSERT(memory_ != nullptr);
-  RELEASE_ASSERT(static_cast<char*>(host_pointer) >= memory_->data(), "");
-  RELEASE_ASSERT(static_cast<char*>(host_pointer) <= memory_->data() + memory_->data_size(), "");
+  if (static_cast<char*>(host_pointer) >= memory_->data() ||
+      static_cast<char*>(host_pointer) <= memory_->data() + memory_->data_size()) {
+    return false;
+  }
   *vm_pointer = static_cast<char*>(host_pointer) - memory_->data();
   return true;
 }
@@ -553,17 +517,21 @@ bool V8::getMemoryOffset(void* host_pointer, uint64_t* vm_pointer) {
 bool V8::setMemory(uint64_t pointer, uint64_t size, const void* data) {
   ENVOY_LOG(trace, "[wasm] setMemory({}, {})", pointer, size);
   ASSERT(memory_ != nullptr);
-  RELEASE_ASSERT(pointer + size <= memory_->data_size(), "");
+  if (pointer + size > memory_->data_size()) {
+    return false;
+  }
   ::memcpy(memory_->data() + pointer, data, size);
   return true;
 }
 
-bool V8::setWord(uint64_t pointer, uint64_t word) {
-  ENVOY_LOG(trace, "[wasm] setWord({}, {})", pointer, word);
-  ASSERT(memory_ != nullptr);
-  RELEASE_ASSERT(pointer + sizeof(uint32_t) <= memory_->data_size(), "");
-  uint32_t word32 = static_cast<uint32_t>(word);
-  ::memcpy(memory_->data() + pointer, &word32, sizeof(uint32_t));
+bool V8::setWord(uint64_t pointer, Word word) {
+  ENVOY_LOG(trace, "[wasm] setWord({}, {})", pointer, word.u64);
+  auto size = sizeof(uint32_t);
+  if (pointer + size > memory_->data_size()) {
+    return false;
+  }
+  uint32_t word32 = word.u32();
+  ::memcpy(memory_->data() + pointer, &word32, size);
   return true;
 }
 
@@ -588,7 +556,7 @@ void V8::registerHostFunctionImpl(absl::string_view moduleName, absl::string_vie
                                    convertArgsTupleToValTypes<std::tuple<>>());
   auto func = wasm::Func::make(
       store_.get(), type.get(),
-      [](void* data, const wasm::Val params[], wasm::Val[]) -> wasm::own<wasm::Trap*> {
+      [](void* data, const wasm::Val params[], wasm::Val[]) -> wasm::own<wasm::Trap> {
         auto func_data = reinterpret_cast<FuncData*>(data);
         ENVOY_LOG(trace, "[wasm] callHostFunction(\"{}\")", func_data->name);
         auto args_tuple = convertValTypesToArgsTuple<std::tuple<Args...>>(params);
@@ -612,7 +580,7 @@ void V8::registerHostFunctionImpl(absl::string_view moduleName, absl::string_vie
                                    convertArgsTupleToValTypes<std::tuple<R>>());
   auto func = wasm::Func::make(
       store_.get(), type.get(),
-      [](void* data, const wasm::Val params[], wasm::Val results[]) -> wasm::own<wasm::Trap*> {
+      [](void* data, const wasm::Val params[], wasm::Val results[]) -> wasm::own<wasm::Trap> {
         auto func_data = reinterpret_cast<FuncData*>(data);
         ENVOY_LOG(trace, "[wasm] callHostFunction(\"{}\")", func_data->name);
         auto args_tuple = convertValTypesToArgsTuple<std::tuple<Args...>>(params);
