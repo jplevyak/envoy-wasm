@@ -20,9 +20,13 @@
 #include "common/common/utility.h"
 #include "common/config/well_known_names.h"
 #include "common/network/application_protocol.h"
+#include "common/network/connection_impl.h"
+#include "common/network/raw_buffer_socket.h"
 #include "common/network/transport_socket_options_impl.h"
 #include "common/network/upstream_server_name.h"
 #include "common/router/metadatamatchcriteria_impl.h"
+
+#include "extensions/transport_sockets/tls/ssl_socket.h"
 
 namespace Envoy {
 namespace TcpProxy {
@@ -56,7 +60,7 @@ Config::SharedConfig::SharedConfig(
     const envoy::config::filter::network::tcp_proxy::v2::TcpProxy& config,
     Server::Configuration::FactoryContext& context)
     : stats_scope_(context.scope().createScope(fmt::format("tcp.{}", config.stat_prefix()))),
-      stats_(generateStats(*stats_scope_)) {
+      stats_(generateStats(*stats_scope_)), fast_path_(config.fast_path()) {
   if (config.has_idle_timeout()) {
     const uint64_t timeout = DurationUtil::durationToMilliseconds(config.idle_timeout());
     if (timeout > 0) {
@@ -553,10 +557,36 @@ void Filter::onUpstreamEvent(Network::ConnectionEvent event) {
             upstream_callbacks->onBytesSent();
           });
     }
+    if (config_->sharedConfig()->fast_path() && read_callbacks_->connection().ssl() &&
+        !upstream_conn_data_->connection().ssl()) {
+      auto client_connection =
+          dynamic_cast<Network::ClientConnectionImpl*>(&upstream_conn_data_->connection());
+      if (client_connection) {
+        auto ssl_socket = static_cast<Extensions::TransportSockets::Tls::SslSocket*>(
+            read_callbacks_->connection().transportSocket());
+        ssl_socket->enableFastPath(client_connection->ioHandle().fd());
+        static_cast<Network::RawBufferSocket*>(client_connection->transportSocket())
+            ->enableFastPath(ssl_socket);
+        fast_path_ = true;
+      }
+    }
   }
 }
 
 void Filter::onIdleTimeout() {
+  auto& connection = read_callbacks_->connection();
+  if (fast_path_) {
+    auto last_activity = static_cast<Extensions::TransportSockets::Tls::SslSocket*>(
+                             read_callbacks_->connection().transportSocket())
+                             ->lastFastPathActivity();
+    auto now = connection.dispatcher().timeSource().monotonicTime();
+    auto delta = now - last_activity;
+    auto timeout = config_->idleTimeout().value() - delta;
+    if (timeout > std::chrono::seconds(0)) {
+      idle_timer_->enableTimer(config_->idleTimeout().value());
+      return;
+    }
+  }
   ENVOY_CONN_LOG(debug, "Session timed out", read_callbacks_->connection());
   config_->stats().idle_timeout_.inc();
 

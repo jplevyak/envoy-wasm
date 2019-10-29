@@ -104,10 +104,22 @@ public:
   Ssl::ConnectionInfoConstSharedPtr ssl() const override;
   // Ssl::PrivateKeyConnectionCallbacks
   void onPrivateKeyMethodComplete() override;
+  void enableFastPath(int fd);
+  MonotonicTime lastFastPathActivity();
 
   SSL* rawSslForTest() const { return ssl_; }
 
 private:
+  struct CircularBuffer {
+    std::unique_ptr<char[]> data_;
+    int start_{0};
+    int end_{0}; // 1 past the end.
+    bool eos_{false};
+
+    void alloc(int size);
+    int readIov(struct iovec* iov);
+    int writeIov(struct iovec* iov);
+  };
   struct ReadResult {
     bool commit_slice_{};
     absl::optional<int> error_;
@@ -115,6 +127,8 @@ private:
   ReadResult sslReadIntoSlice(Buffer::RawSlice& slice);
 
   Network::PostIoAction doHandshake();
+  bool doReadFastPath();  // returns end_of_stream.
+  bool doWriteFastPath(); // returns end_of_stream.
   void drainErrorQueue();
   void shutdownSsl();
   bool isThreadSafe() const {
@@ -130,6 +144,11 @@ private:
 
   SSL* ssl_;
   Ssl::ConnectionInfoConstSharedPtr info_;
+
+  int fast_path_fd_{-1};
+  MonotonicTime last_fast_path_activity_;
+  CircularBuffer fast_path_read_buffer_;
+  CircularBuffer fast_path_write_buffer_;
 };
 
 class ClientSslSocketFactory : public Network::TransportSocketFactory,

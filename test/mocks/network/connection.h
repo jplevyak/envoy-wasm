@@ -72,6 +72,7 @@ public:
   MOCK_CONST_METHOD0(localAddress, const Address::InstanceConstSharedPtr&());
   MOCK_METHOD1(setConnectionStats, void(const ConnectionStats& stats));
   MOCK_CONST_METHOD0(ssl, Ssl::ConnectionInfoConstSharedPtr());
+  MOCK_CONST_METHOD0(transportSocket, TransportSocket*());
   MOCK_CONST_METHOD0(requestedServerName, absl::string_view());
   MOCK_CONST_METHOD0(state, State());
   MOCK_METHOD2(write, void(Buffer::Instance& data, bool end_stream));

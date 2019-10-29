@@ -74,6 +74,7 @@ public:
                  Server::Configuration::FactoryContext& context);
     const TcpProxyStats& stats() { return stats_; }
     const absl::optional<std::chrono::milliseconds>& idleTimeout() { return idle_timeout_; }
+    bool fast_path() const { return fast_path_; }
 
   private:
     static TcpProxyStats generateStats(Stats::Scope& scope);
@@ -84,6 +85,7 @@ public:
 
     const TcpProxyStats stats_;
     absl::optional<std::chrono::milliseconds> idle_timeout_;
+    const bool fast_path_;
   };
 
   using SharedConfigSharedPtr = std::shared_ptr<SharedConfig>;
@@ -289,6 +291,7 @@ protected:
   Network::TransportSocketOptionsSharedPtr transport_socket_options_;
   uint32_t connect_attempts_{};
   bool connecting_{};
+  bool fast_path_{false};
 };
 
 // This class deals with an upstream connection that needs to finish flushing, when the downstream

@@ -23,6 +23,7 @@ namespace Tls {
 namespace {
 
 constexpr absl::string_view NotReadyReason{"TLS error: Secret is not supplied by SDS"};
+constexpr int FastPathBufferSize = 16384;
 
 // This SslSocket will be used when SSL secret is not fetched from SDS server.
 class NotReadySslSocket : public Network::TransportSocket {
@@ -56,6 +57,17 @@ SslSocket::SslSocket(Envoy::Ssl::ContextSharedPtr ctx, InitialState state,
     SSL_set_accept_state(ssl_);
   }
 }
+
+void SslSocket::enableFastPath(int fd) {
+  fast_path_fd_ = fd;
+  last_fast_path_activity_ = callbacks_->connection().dispatcher().timeSource().monotonicTime();
+  fast_path_read_buffer_.alloc(FastPathBufferSize);
+  fast_path_write_buffer_.alloc(FastPathBufferSize);
+  doReadFastPath();
+  doWriteFastPath();
+}
+
+MonotonicTime SslSocket::lastFastPathActivity() { return last_fast_path_activity_; }
 
 void SslSocket::setTransportSocketCallbacks(Network::TransportSocketCallbacks& callbacks) {
   ASSERT(!callbacks_);
@@ -95,7 +107,154 @@ SslSocket::ReadResult SslSocket::sslReadIntoSlice(Buffer::RawSlice& slice) {
   return result;
 }
 
+static int circularAdd(int x, int y) { return ((x + y) % FastPathBufferSize); }
+static int circularSub(int x, int y) { return ((x + FastPathBufferSize - y) % FastPathBufferSize); }
+
+int SslSocket::CircularBuffer::readIov(struct iovec* iov) {
+  iov[0].iov_base = &data_[end_];
+  if (end_ < start_) {
+    iov[0].iov_len = start_ - end_;
+    return 1;
+  } else if (start_ == 0) {
+    iov[0].iov_len = FastPathBufferSize - end_ - 1;
+    return 1;
+  } else {
+    iov[0].iov_len = FastPathBufferSize - end_;
+    iov[1].iov_base = &data_[0];
+    iov[1].iov_len = start_ - 1;
+    return 2;
+  }
+}
+
+int SslSocket::CircularBuffer::writeIov(struct iovec* iov) {
+  iov[0].iov_base = &data_[start_];
+  iov[0].iov_len = end_ - start_;
+  if (end_ > start_) {
+    return 1;
+  } else {
+    iov[1].iov_base = &data_[0];
+    iov[1].iov_len = end_;
+    return 2;
+  }
+}
+
+void SslSocket::CircularBuffer::alloc(int size) { data_.reset(new char[size]); }
+
+bool SslSocket::doReadFastPath() {
+  // TODO: Implement drain.
+  if (fast_path_read_buffer_.eos_ || fast_path_write_buffer_.eos_) {
+    return true;
+  }
+  bool activity = false;
+  auto& buffer = fast_path_read_buffer_;
+  while (true) {
+    // Try to read.
+    int size = circularSub(buffer.end_, buffer.start_);
+    if (size < FastPathBufferSize - 1) {
+      int space = 0;
+      if (buffer.end_ >= buffer.start_) {
+        space = FastPathBufferSize - buffer.end_;
+        if (buffer.start_ == 0) {
+          space -= 1;
+        }
+      } else {
+        space = buffer.end_ - buffer.start_ - 1;
+      }
+      int rc = SSL_read(ssl_, &buffer.data_[buffer.end_], space);
+      ENVOY_CONN_LOG(trace, "ssl read returns: {}", callbacks_->connection(), rc);
+      if (rc > 0) {
+        activity = true;
+        buffer.end_ = circularAdd(buffer.end_, rc);
+      } else {
+        if (SSL_get_error(ssl_, rc) != SSL_ERROR_WANT_READ) {
+          buffer.eos_ = true;
+        }
+      }
+    }
+    // Try to write.
+    size = circularSub(buffer.end_, buffer.start_);
+    if (size > 0) {
+      struct iovec iov[2];
+      int n = buffer.writeIov(iov);
+      ssize_t result = ::writev(fast_path_fd_, iov, n);
+      if (result > 0) {
+        buffer.start_ = circularAdd(buffer.start_, result);
+        activity = true;
+      } else {
+        if (errno != EAGAIN) {
+          buffer.eos_ = true;
+        }
+        // Error or could not write, exit loop.
+        break;
+      }
+    } else {
+      // Could not read, exit loop.
+      buffer.start_ = 0;
+      buffer.end_ = 0;
+      break;
+    }
+  }
+  if (activity) {
+    last_fast_path_activity_ = callbacks_->connection().dispatcher().timeSource().monotonicTime();
+  }
+  return fast_path_read_buffer_.eos_ || fast_path_write_buffer_.eos_;
+}
+
+bool SslSocket::doWriteFastPath() {
+  // TODO: Implement drain.
+  if (fast_path_read_buffer_.eos_ || fast_path_write_buffer_.eos_) {
+    return true;
+  }
+  bool activity = false;
+  auto& buffer = fast_path_write_buffer_;
+  while (true) {
+    // Try to read.
+    int size = circularSub(buffer.end_, buffer.start_);
+    if (size < FastPathBufferSize - 1) {
+      struct iovec iov[2];
+      int n = buffer.readIov(iov);
+      ssize_t result = ::readv(fast_path_fd_, iov, n);
+      if (result > 0) {
+        buffer.end_ = circularAdd(buffer.end_, result);
+        activity = true;
+        continue;
+      } else if (errno != EAGAIN) {
+        buffer.eos_ = true;
+      }
+    }
+    // Try to write.
+    size = circularSub(buffer.end_, buffer.start_);
+    if (!size) {
+      // Could not read and buffer is tempty, exit loop.
+      break;
+    }
+    int towrite = buffer.end_ > buffer.start_ ? buffer.end_ - buffer.start_
+                                              : FastPathBufferSize - buffer.start_;
+    int rc = SSL_write(ssl_, &buffer.data_[buffer.start_], towrite);
+    ENVOY_CONN_LOG(trace, "ssl write returns: {}", callbacks_->connection(), rc);
+    if (rc > 0) {
+      activity = true;
+      buffer.start_ = circularAdd(buffer.start_, rc);
+    } else {
+      int err = SSL_get_error(ssl_, rc);
+      if (err != SSL_ERROR_WANT_WRITE) {
+        buffer.eos_ = true;
+      }
+      // Cannot write, exit loop.
+      break;
+    }
+  }
+  if (activity) {
+    last_fast_path_activity_ = callbacks_->connection().dispatcher().timeSource().monotonicTime();
+  }
+  return fast_path_read_buffer_.eos_ || fast_path_write_buffer_.eos_;
+}
+
 Network::IoResult SslSocket::doRead(Buffer::Instance& read_buffer) {
+  if (fast_path_fd_ >= 0) {
+    auto eos = doReadFastPath();
+    return {eos ? PostIoAction::Close : PostIoAction::KeepOpen, 0, eos};
+  }
   if (state_ != SocketState::HandshakeComplete && state_ != SocketState::ShutdownSent) {
     PostIoAction action = doHandshake();
     if (action == PostIoAction::Close || state_ != SocketState::HandshakeComplete) {
@@ -104,7 +263,6 @@ Network::IoResult SslSocket::doRead(Buffer::Instance& read_buffer) {
       return {action, 0, false};
     }
   }
-
   bool keep_reading = true;
   bool end_stream = false;
   PostIoAction action = PostIoAction::KeepOpen;
@@ -230,6 +388,10 @@ void SslSocket::drainErrorQueue() {
 }
 
 Network::IoResult SslSocket::doWrite(Buffer::Instance& write_buffer, bool end_stream) {
+  if (fast_path_fd_ >= 0) {
+    auto eos = doWriteFastPath();
+    return {eos ? PostIoAction::Close : PostIoAction::KeepOpen, 0, eos};
+  }
   ASSERT(state_ != SocketState::ShutdownSent || write_buffer.length() == 0);
   if (state_ != SocketState::HandshakeComplete && state_ != SocketState::ShutdownSent) {
     PostIoAction action = doHandshake();
@@ -248,8 +410,8 @@ Network::IoResult SslSocket::doWrite(Buffer::Instance& write_buffer, bool end_st
 
   uint64_t total_bytes_written = 0;
   while (bytes_to_write > 0) {
-    // TODO(mattklein123): As it relates to our fairness efforts, we might want to limit the number
-    // of iterations of this loop, either by pure iterations, bytes written, etc.
+    // TODO(mattklein123): As it relates to our fairness efforts, we might want to limit the
+    // number of iterations of this loop, either by pure iterations, bytes written, etc.
 
     // SSL_write() requires that if a previous call returns SSL_ERROR_WANT_WRITE, we need to call
     // it again with the same parameters. This is done by tracking last write size, but not write

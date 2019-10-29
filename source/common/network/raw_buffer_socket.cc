@@ -13,6 +13,9 @@ void RawBufferSocket::setTransportSocketCallbacks(TransportSocketCallbacks& call
 }
 
 IoResult RawBufferSocket::doRead(Buffer::Instance& buffer) {
+  if (fast_path_socket_) {
+    return fast_path_socket_->doWrite(buffer, false);
+  }
   PostIoAction action = PostIoAction::KeepOpen;
   uint64_t bytes_read = 0;
   bool end_stream = false;
@@ -47,6 +50,9 @@ IoResult RawBufferSocket::doRead(Buffer::Instance& buffer) {
 }
 
 IoResult RawBufferSocket::doWrite(Buffer::Instance& buffer, bool end_stream) {
+  if (fast_path_socket_) {
+    return fast_path_socket_->doRead(buffer);
+  }
   PostIoAction action;
   uint64_t bytes_written = 0;
   ASSERT(!shutdown_ || buffer.length() == 0);

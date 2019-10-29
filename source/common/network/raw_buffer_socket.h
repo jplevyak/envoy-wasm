@@ -22,8 +22,11 @@ public:
   IoResult doWrite(Buffer::Instance& buffer, bool end_stream) override;
   Ssl::ConnectionInfoConstSharedPtr ssl() const override { return nullptr; }
 
+  void enableFastPath(TransportSocket* socket) { fast_path_socket_ = socket; }
+
 private:
   TransportSocketCallbacks* callbacks_{};
+  TransportSocket* fast_path_socket_{};
   bool shutdown_{};
 };
 

@@ -212,6 +212,11 @@ public:
   virtual void setConnectionStats(const ConnectionStats& stats) PURE;
 
   /**
+   * @return the transport socket.
+   */
+  virtual TransportSocket* transportSocket() const PURE;
+
+  /**
    * @return the const SSL connection data if this is an SSL connection, or nullptr if it is not.
    */
   // TODO(snowp): Remove this in favor of StreamInfo::downstreamSslConnection.
