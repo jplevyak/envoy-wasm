@@ -64,9 +64,12 @@ TEST_P(Http2IntegrationTest, Retry) { testRetry(); }
 
 TEST_P(Http2IntegrationTest, RetryAttemptCount) { testRetryAttemptCountHeader(); }
 
+TEST_P(Http2IntegrationTest, LargeRequestTrailersRejected) { testLargeRequestTrailers(66, 60); }
+
 static std::string response_metadata_filter = R"EOF(
 name: response-metadata-filter
-config: {}
+typed_config:
+  "@type": type.googleapis.com/google.protobuf.Empty
 )EOF";
 
 // Verifies metadata can be sent at different locations of the responses.
@@ -481,7 +484,8 @@ TEST_P(Http2MetadataIntegrationTest, RequestMetadataReachSizeLimit) {
 
 static std::string request_metadata_filter = R"EOF(
 name: request-metadata-filter
-config: {}
+typed_config:
+  "@type": type.googleapis.com/google.protobuf.Empty
 )EOF";
 
 TEST_P(Http2MetadataIntegrationTest, ConsumeAndInsertRequestMetadata) {
@@ -590,7 +594,8 @@ TEST_P(Http2MetadataIntegrationTest, ConsumeAndInsertRequestMetadata) {
 
 static std::string decode_headers_only = R"EOF(
 name: decode-headers-only
-config: {}
+typed_config:
+  "@type": type.googleapis.com/google.protobuf.Empty
 )EOF";
 
 void Http2MetadataIntegrationTest::runHeaderOnlyTest(bool send_request_body, size_t body_size) {
@@ -697,7 +702,8 @@ void Http2MetadataIntegrationTest::testRequestMetadataWithStopAllFilter() {
 
 static std::string metadata_stop_all_filter = R"EOF(
 name: metadata-stop-all-filter
-config: {}
+typed_config:
+  "@type": type.googleapis.com/google.protobuf.Empty
 )EOF";
 
 TEST_P(Http2MetadataIntegrationTest, RequestMetadataWithStopAllFilterBeforeMetadataFilter) {
@@ -1139,7 +1145,8 @@ TEST_P(Http2IntegrationTest, DelayedCloseDisabled) {
 TEST_P(Http2IntegrationTest, PauseAndResume) {
   config_helper_.addFilter(R"EOF(
   name: stop-iteration-and-continue-filter
-  config: {}
+  typed_config:
+    "@type": type.googleapis.com/google.protobuf.Empty
   )EOF");
   initialize();
 
@@ -1168,7 +1175,8 @@ TEST_P(Http2IntegrationTest, PauseAndResume) {
 TEST_P(Http2IntegrationTest, PauseAndResumeHeadersOnly) {
   config_helper_.addFilter(R"EOF(
   name: stop-iteration-and-continue-filter
-  config: {}
+  typed_config:
+    "@type": type.googleapis.com/google.protobuf.Empty
   )EOF");
   initialize();
 
@@ -1433,7 +1441,7 @@ const int64_t TransmitThreshold = 100 * 1024 * 1024;
 
 void Http2FloodMitigationTest::setNetworkConnectionBufferSize() {
   // nghttp2 library has its own internal mitigation for outbound control frames. The mitigation is
-  // trigerred when there are more than 10000 PING or SETTINGS frames with ACK flag in the nghttp2
+  // triggered when there are more than 10000 PING or SETTINGS frames with ACK flag in the nghttp2
   // internal outbound queue. It is possible to trigger this mitigation in nghttp2 before triggering
   // Envoy's own flood mitigation. This can happen when a buffer larger enough to contain over 10K
   // PING or SETTINGS frames is dispatched to the nghttp2 library. To prevent this from happening

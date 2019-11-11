@@ -5,11 +5,12 @@ package envoy.config.accesslog.v2;
 option java_outer_classname = "WasmProto";
 option java_multiple_files = true;
 option java_package = "io.envoyproxy.envoy.config.accesslog.v2";
-option go_package = "v2";
+
+import "envoy/config/wasm/v2/wasm.proto";
+
+import "google/protobuf/struct.proto";
 
 import "validate/validate.proto";
-import "google/protobuf/struct.proto";
-import "envoy/config/wasm/v2/wasm.proto";
 
 // [#protodoc-title: Wasm access log]
 
@@ -17,13 +18,5 @@ import "envoy/config/wasm/v2/wasm.proto";
 // that calls into a WASM VM. Configures the built-in *envoy.wasm_access_log*
 // AccessLog.
 message WasmAccessLog {
-  // A unique ID for a set of filters/services in a VM which will share Context(s).
-  string root_id = 1;
-  // A unique ID for a VM so that multiple filters/services can call into the same VM.
-  string vm_id = 2;
-  //  Wasm configuration string e.g. a serialized protobuf which will be the argument to the
-  // VM configure() call.
-  string configuration = 3;
-  // Configuration for starting a new VM to be associated with the given vm_id.
-  envoy.config.wasm.v2.VmConfig vm_config = 4;
+  wasm.v2.PluginConfig config = 1;
 }

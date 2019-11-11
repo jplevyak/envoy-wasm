@@ -8,6 +8,7 @@ load(
 load(
     "//test/extensions:extensions_build_system.bzl",
     "envoy_extension_cc_test",
+    "envoy_extension_cc_test_binary",
 )
 
 envoy_package()
@@ -51,6 +52,31 @@ envoy_extension_cc_test(
         "//test/mocks/thread_local:thread_local_mocks",
         "//test/mocks/upstream:upstream_mocks",
         "//test/test_common:environment_lib",
-        "@envoy_api//envoy/config/wasm/v2:wasm_cc",
+        "@envoy_api//envoy/config/wasm/v2:pkg_cc_proto",
+    ],
+)
+
+envoy_extension_cc_test_binary(
+    name = "wasm_speed_test",
+    srcs = ["wasm_speed_test.cc"],
+    data = [
+        "//test/extensions/wasm/test_data:modules",
+    ],
+    extension_name = "envoy.wasm",
+    external_deps = [
+        "abseil_optional",
+        "benchmark",
+    ],
+    deps = [
+        "//source/common/event:dispatcher_lib",
+        "//source/common/stats:isolated_store_lib",
+        "//source/common/stats:stats_lib",
+        "//source/extensions/common/wasm:wasm_lib",
+        "//source/extensions/common/wasm/null/sample_plugin:plugin",
+        "//source/extensions/wasm:config",
+        "//test/mocks/server:server_mocks",
+        "//test/mocks/upstream:upstream_mocks",
+        "//test/test_common:environment_lib",
+        "//test/test_common:simulated_time_system_lib",
     ],
 )

@@ -34,11 +34,11 @@ class HttpWasmStressTest : public WasmStressTest {};
 INSTANTIATE_TEST_SUITE_P(RuntimesAndLanguages, GrpcWasmStressTest,
                          testing::Combine(testing::Values(
 #if defined(ENVOY_WASM_V8) && defined(ENVOY_WASM_WAVM)
-                                              "envoy.wasm.vm.v8", "envoy.wasm.vm.wavm"
+                                              "envoy.wasm.runtime.v8", "envoy.wasm.runtime.wavm"
 #elif defined(ENVOY_WASM_V8)
-                                              "envoy.wasm.vm.v8"
+                                              "envoy.wasm.runtime.v8"
 #elif defined(ENVOY_WASM_WAVM)
-                                              "envoy.wasm.vm.wavm"
+                                              "envoy.wasm.runtime.wavm"
 #endif
                                               ),
                                           testing::Values("cpp"), testing::Values("http2"),
@@ -47,11 +47,11 @@ INSTANTIATE_TEST_SUITE_P(RuntimesAndLanguages, GrpcWasmStressTest,
 INSTANTIATE_TEST_SUITE_P(RuntimesAndLanguages, HttpWasmStressTest,
                          testing::Combine(testing::Values(
 #if defined(ENVOY_WASM_V8) && defined(ENVOY_WASM_WAVM)
-                                              "envoy.wasm.vm.v8", "envoy.wasm.vm.wavm"
+                                              "envoy.wasm.runtime.v8", "envoy.wasm.runtime.wavm"
 #elif defined(ENVOY_WASM_V8)
-                                              "envoy.wasm.vm.v8"
+                                              "envoy.wasm.runtime.v8"
 #elif defined(ENVOY_WASM_WAVM)
-                                              "envoy.wasm.vm.wavm"
+                                              "envoy.wasm.runtime.wavm"
 #endif
                                               ),
                                           testing::Values("cpp"), testing::Values("http1", "http2"),
@@ -60,9 +60,8 @@ INSTANTIATE_TEST_SUITE_P(RuntimesAndLanguages, HttpWasmStressTest,
 TEST_P(GrpcWasmStressTest, CalloutHappyPath) {
   constexpr uint32_t connections_to_initiate = 30;
   constexpr uint32_t requests_to_send = 30 * connections_to_initiate;
-  const std::string wasm_file = absl::StrCat(
-      TestEnvironment::runfilesDirectory(),
-      "/test/extensions/filters/http/wasm/test_data/grpc_callout_", wasmLang(), ".wasm");
+  const std::string wasm_file = TestEnvironment::runfilesPath(absl::StrCat(
+      "test/extensions/filters/http/wasm/test_data/grpc_callout_", wasmLang(), ".wasm"));
   // Must match cluster name in the wasm bundle:
   const std::string callout_cluster_name{"callout_cluster"};
 
@@ -72,11 +71,14 @@ TEST_P(GrpcWasmStressTest, CalloutHappyPath) {
 
   config_helper_.addFilter(fmt::format(R"EOF(
             name: envoy.filters.http.wasm
-            config:
-              vm_config:
-                vm: "{}"
-                code:
-                  filename: "{}"
+            typed_config:
+              "@type": type.googleapis.com/envoy.config.filter.http.wasm.v2.Wasm
+              config:
+                vm_config:
+                  runtime: "{}"
+                  code:
+                    local:
+                      filename: "{}"
 )EOF",
                                        wasmVM(), wasm_file));
 
@@ -169,9 +171,8 @@ TEST_P(GrpcWasmStressTest, CalloutHappyPath) {
 TEST_P(GrpcWasmStressTest, CalloutErrorResponse) {
   constexpr uint32_t connections_to_initiate = 30;
   constexpr uint32_t requests_to_send = 30 * connections_to_initiate;
-  const std::string wasm_file = absl::StrCat(
-      TestEnvironment::runfilesDirectory(),
-      "/test/extensions/filters/http/wasm/test_data/grpc_callout_", wasmLang(), ".wasm");
+  const std::string wasm_file = TestEnvironment::runfilesPath(absl::StrCat(
+      "test/extensions/filters/http/wasm/test_data/grpc_callout_", wasmLang(), ".wasm"));
   // Must match cluster name in the wasm bundle:
   const std::string callout_cluster_name{"callout_cluster"};
 
@@ -182,11 +183,12 @@ TEST_P(GrpcWasmStressTest, CalloutErrorResponse) {
   config_helper_.addFilter(fmt::format(R"EOF(
             name: envoy.filters.http.wasm
             config:
-              vm_config:
-                vm: "{}"
-                code:
-                  filename: "{}"
-                allow_precompiled: true
+              config:
+                vm_config:
+                  runtime: "{}"
+                  code:
+                    local:
+                      filename: "{}"
 )EOF",
                                        wasmVM(), wasm_file));
 
@@ -279,10 +281,9 @@ TEST_P(HttpWasmStressTest, DISABLED_CalloutHappyPath) {
   constexpr uint32_t connections_to_initiate = 30;
   constexpr uint32_t requests_to_send = 30 * connections_to_initiate;
   const std::string wasm_vm{std::get<0>(GetParam())};
-  const std::string wasm_file =
-      absl::StrCat(TestEnvironment::runfilesDirectory(),
-                   "/test/extensions/filters/http/wasm/test_data/http_callout_",
-                   std::get<1>(GetParam()), ".wasm");
+  const std::string wasm_file = TestEnvironment::runfilesPath(
+      absl::StrCat("test/extensions/filters/http/wasm/test_data/http_callout_",
+                   std::get<1>(GetParam()), ".wasm"));
   const std::string callout_cluster_name{"callout_cluster"};
 
   //
@@ -292,10 +293,11 @@ TEST_P(HttpWasmStressTest, DISABLED_CalloutHappyPath) {
   config_helper_.addFilter(fmt::format(R"EOF(
             name: envoy.filters.http.wasm
             config:
-              vm_config:
-                vm: "{}"
-                code:
-                  filename: "{}"
+              config:
+                vm_config:
+                  runtime: "{}"
+                  code:
+                    filename: "{}"
 )EOF",
                                        wasm_vm, wasm_file));
 

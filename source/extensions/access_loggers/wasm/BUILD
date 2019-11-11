@@ -28,9 +28,10 @@ envoy_cc_library(
         "//include/envoy/registry",
         "//include/envoy/server:access_log_config_interface",
         "//source/common/access_log:access_log_formatter_lib",
+        "//source/common/config:datasource_lib",
         "//source/common/protobuf",
         "//source/extensions/access_loggers:well_known_names",
         "//source/extensions/common/wasm:wasm_lib",
-        "@envoy_api//envoy/config/accesslog/v2:wasm_cc",
+        "@envoy_api//envoy/config/accesslog/v2:pkg_cc_proto",
     ],
 )

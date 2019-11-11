@@ -6,6 +6,7 @@
 
 #include "common/common/assert.h"
 
+#include "extensions/common/wasm/wasm_vm_base.h"
 #include "extensions/common/wasm/well_known_names.h"
 
 #include "absl/container/flat_hash_map.h"
@@ -18,83 +19,60 @@ namespace Common {
 namespace Wasm {
 namespace V8 {
 
+VmGlobalStats global_stats_;
+
 wasm::Engine* engine() {
   static const auto engine = wasm::Engine::make();
   return engine.get();
 }
 
 struct FuncData {
-  FuncData(std::string name) : name(name) {}
+  FuncData(std::string name) : name_(std::move(name)) {}
 
-  std::string name;
-  wasm::own<wasm::Func> callback;
-  void* raw_func;
+  std::string name_;
+  wasm::own<wasm::Func> callback_;
+  void* raw_func_;
 };
 
-typedef std::unique_ptr<FuncData> FuncDataPtr;
+using FuncDataPtr = std::unique_ptr<FuncData>;
 
-class V8 : public WasmVm {
+class V8 : public WasmVmBase {
 public:
-  V8() = default;
+  V8(Stats::ScopeSharedPtr scope) : WasmVmBase(scope, &global_stats_, WasmRuntimeNames::get().V8) {}
 
   // Extensions::Common::Wasm::WasmVm
-  absl::string_view vm() override { return WasmVmNames::get().v8; }
+  absl::string_view runtime() override { return WasmRuntimeNames::get().V8; }
 
   bool load(const std::string& code, bool allow_precompiled) override;
-  absl::string_view getUserSection(absl::string_view name) override;
-  void link(absl::string_view debug_name, bool needs_emscripten) override;
-  void setMemoryLayout(uint64_t stack_base, uint64_t heap_base,
-                       uint64_t heap_base_pointer) override;
+  absl::string_view getCustomSection(absl::string_view name) override;
+  void link(absl::string_view debug_name) override;
 
-  // We don't care about this.
-  void makeModule(absl::string_view) override {}
-
-  // v8 is currently not clonable.
-  bool clonable() override { return false; }
-  std::unique_ptr<WasmVm> clone() override { return nullptr; }
-
-  void start(Context* context) override;
+  // V8 is currently not cloneable.
+  bool cloneable() override { return false; }
+  WasmVmPtr clone() override { return nullptr; }
 
   uint64_t getMemorySize() override;
   absl::optional<absl::string_view> getMemory(uint64_t pointer, uint64_t size) override;
-  bool getMemoryOffset(void* host_pointer, uint64_t* vm_pointer) override;
   bool setMemory(uint64_t pointer, uint64_t size, const void* data) override;
+  bool getWord(uint64_t pointer, Word* word) override;
   bool setWord(uint64_t pointer, Word word) override;
 
-#define _REGISTER_HOST_GLOBAL(_T)                                                                  \
-  std::unique_ptr<Global<_T>> makeGlobal(absl::string_view module_name, absl::string_view name,    \
-                                         _T initial_value) override {                              \
-    return registerHostGlobalImpl(module_name, name, initial_value);                               \
-  };
-  _REGISTER_HOST_GLOBAL(Word);
-  _REGISTER_HOST_GLOBAL(double);
-#undef _REGISTER_HOST_GLOBAL
-
-#define _REGISTER_HOST_FUNCTION(_T)                                                                \
-  void registerCallback(absl::string_view module_name, absl::string_view function_name, _T,        \
-                        typename ConvertFunctionTypeWordToUint32<_T>::type f) override {           \
+#define _REGISTER_HOST_FUNCTION(T)                                                                 \
+  void registerCallback(absl::string_view module_name, absl::string_view function_name, T,         \
+                        typename ConvertFunctionTypeWordToUint32<T>::type f) override {            \
     registerHostFunctionImpl(module_name, function_name, f);                                       \
   };
   FOR_ALL_WASM_VM_IMPORTS(_REGISTER_HOST_FUNCTION)
 #undef _REGISTER_HOST_FUNCTION
 
-#define _GET_MODULE_FUNCTION(_T)                                                                   \
-  void getFunction(absl::string_view function_name, _T* f) override {                              \
+#define _GET_MODULE_FUNCTION(T)                                                                    \
+  void getFunction(absl::string_view function_name, T* f) override {                               \
     getModuleFunctionImpl(function_name, f);                                                       \
   };
   FOR_ALL_WASM_VM_EXPORTS(_GET_MODULE_FUNCTION)
 #undef _GET_MODULE_FUNCTION
 
 private:
-  void callModuleFunction(Context* context, absl::string_view function_name, const wasm::Val args[],
-                          wasm::Val results[]);
-  void callModuleFunction(Context* context, absl::string_view function_name, const wasm::Func* func,
-                          const wasm::Val args[], wasm::Val results[]);
-
-  template <typename T>
-  std::unique_ptr<Global<T>> registerHostGlobalImpl(absl::string_view module_name,
-                                                    absl::string_view name, T initial_value);
-
   template <typename... Args>
   void registerHostFunctionImpl(absl::string_view module_name, absl::string_view function_name,
                                 void (*function)(void*, Args...));
@@ -118,18 +96,41 @@ private:
   wasm::own<wasm::Memory> memory_;
   wasm::own<wasm::Table> table_;
 
-  absl::flat_hash_map<std::string, wasm::own<wasm::Global>> host_globals_;
   absl::flat_hash_map<std::string, FuncDataPtr> host_functions_;
   absl::flat_hash_map<std::string, wasm::own<wasm::Func>> module_functions_;
-
-  uint32_t memory_stack_base_;
-  uint32_t memory_heap_base_;
-  uint32_t memory_heap_base_pointer_;
-
-  bool module_needs_emscripten_{};
 };
 
 // Helper functions.
+
+static std::string printValue(const wasm::Val& value) {
+  switch (value.kind()) {
+  case wasm::I32:
+    return std::to_string(value.get<uint32_t>());
+  case wasm::I64:
+    return std::to_string(value.get<uint64_t>());
+  case wasm::F32:
+    return std::to_string(value.get<float>());
+  case wasm::F64:
+    return std::to_string(value.get<double>());
+  default:
+    return "unknown";
+  }
+}
+
+static std::string printValues(const wasm::Val values[], size_t size) {
+  if (size == 0) {
+    return "";
+  }
+
+  std::string s;
+  for (size_t i = 0; i < size; i++) {
+    if (i) {
+      s.append(", ");
+    }
+    s.append(printValue(values[i]));
+  }
+  return s;
+}
 
 static const char* printValKind(wasm::ValKind kind) {
   switch (kind) {
@@ -185,7 +186,7 @@ static uint32_t parseVarint(const byte_t*& pos, const byte_t* end) {
   byte_t b;
   do {
     if (pos + 1 > end) {
-      throw WasmException("Failed to parse corrupted WASM module");
+      throw WasmVmException("Failed to parse corrupted WASM module");
     }
     b = *pos++;
     n += (b & 0x7f) << shift;
@@ -196,11 +197,15 @@ static uint32_t parseVarint(const byte_t*& pos, const byte_t* end) {
 
 // Template magic.
 
-template <typename T> struct ConvertWordType { using type = T; };
-template <> struct ConvertWordType<Word> { using type = uint32_t; };
+template <typename T> struct ConvertWordType {
+  using type = T; // NOLINT(readability-identifier-naming)
+};
+template <> struct ConvertWordType<Word> {
+  using type = uint32_t; // NOLINT(readability-identifier-naming)
+};
 
 template <typename T> wasm::Val makeVal(T t) { return wasm::Val::make(t); }
-template <> wasm::Val makeVal(Word t) { return wasm::Val::make(static_cast<uint32_t>(t.u64)); }
+template <> wasm::Val makeVal(Word t) { return wasm::Val::make(static_cast<uint32_t>(t.u64_)); }
 
 template <typename T> constexpr auto convertArgToValKind();
 template <> constexpr auto convertArgToValKind<Word>() { return wasm::I32; };
@@ -210,15 +215,6 @@ template <> constexpr auto convertArgToValKind<int64_t>() { return wasm::I64; };
 template <> constexpr auto convertArgToValKind<uint64_t>() { return wasm::I64; };
 template <> constexpr auto convertArgToValKind<float>() { return wasm::F32; };
 template <> constexpr auto convertArgToValKind<double>() { return wasm::F64; };
-
-template <typename T> struct V8ProxyForGlobal : Global<T> {
-  V8ProxyForGlobal(wasm::Global* value) : global_(value) {}
-
-  T get() override { return global_->get().get<typename ConvertWordTypeToUint32<T>::type>(); };
-  void set(const T& value) override { global_->set(makeVal(static_cast<T>(value))); };
-
-  wasm::Global* global_;
-};
 
 template <typename T, std::size_t... I>
 constexpr auto convertArgsTupleToValTypesImpl(absl::index_sequence<I...>) {
@@ -246,7 +242,7 @@ template <typename T, typename U> constexpr T convertValTypesToArgsTuple(const U
 // V8 implementation.
 
 bool V8::load(const std::string& code, bool /* allow_precompiled */) {
-  ENVOY_LOG(trace, "[wasm] load()");
+  ENVOY_LOG(trace, "load()");
   store_ = wasm::Store::make(engine());
   RELEASE_ASSERT(store_ != nullptr, "");
 
@@ -257,32 +253,32 @@ bool V8::load(const std::string& code, bool /* allow_precompiled */) {
   return module_ != nullptr;
 }
 
-absl::string_view V8::getUserSection(absl::string_view name) {
-  ENVOY_LOG(trace, "[wasm] getUserSection(\"{}\")", name);
+absl::string_view V8::getCustomSection(absl::string_view name) {
+  ENVOY_LOG(trace, "getCustomSection(\"{}\")", name);
   ASSERT(source_.get() != nullptr);
 
   const byte_t* end = source_.get() + source_.size();
   const byte_t* pos = source_.get() + 8; // skip header
   while (pos < end) {
     if (pos + 1 > end) {
-      throw WasmException("Failed to parse corrupted WASM module");
+      throw WasmVmException("Failed to parse corrupted WASM module");
     }
     auto type = *pos++;
     auto rest = parseVarint(pos, end);
     if (pos + rest > end) {
-      throw WasmException("Failed to parse corrupted WASM module");
+      throw WasmVmException("Failed to parse corrupted WASM module");
     }
     if (type == 0 /* custom section */) {
       auto start = pos;
       auto len = parseVarint(pos, end);
       if (pos + len > end) {
-        throw WasmException("Failed to parse corrupted WASM module");
+        throw WasmVmException("Failed to parse corrupted WASM module");
       }
       pos += len;
       rest -= (pos - start);
       if (len == name.size() && ::memcmp(pos - len, name.data(), len) == 0) {
-        ENVOY_LOG(trace, "[wasm] getUserSection(\"{}\") found, size: {}", name, rest);
-        return absl::string_view(pos, rest);
+        ENVOY_LOG(trace, "getCustomSection(\"{}\") found, size: {}", name, rest);
+        return {pos, rest};
       }
     }
     pos += rest;
@@ -290,8 +286,8 @@ absl::string_view V8::getUserSection(absl::string_view name) {
   return "";
 }
 
-void V8::link(absl::string_view debug_name, bool needs_emscripten) {
-  ENVOY_LOG(trace, "[wasm] link(\"{}\"), emscripten: {}", debug_name, needs_emscripten);
+void V8::link(absl::string_view debug_name) {
+  ENVOY_LOG(trace, "link(\"{}\")", debug_name);
   ASSERT(module_ != nullptr);
 
   const auto import_types = module_.get()->imports();
@@ -305,62 +301,39 @@ void V8::link(absl::string_view debug_name, bool needs_emscripten) {
     switch (import_type->kind()) {
 
     case wasm::EXTERN_FUNC: {
-      ENVOY_LOG(trace, "[wasm] link(), export host func: {}.{} ({} -> {})", module, name,
+      ENVOY_LOG(trace, "link(), export host func: {}.{} ({} -> {})", module, name,
                 printValTypes(import_type->func()->params()),
                 printValTypes(import_type->func()->results()));
 
-      const wasm::Func* func = nullptr;
       auto it = host_functions_.find(absl::StrCat(module, ".", name));
-      if (it != host_functions_.end()) {
-        func = it->second.get()->callback.get();
-      } else {
-        it = host_functions_.find(absl::StrCat("envoy", ".", name));
-        if (it != host_functions_.end()) {
-          func = it->second.get()->callback.get();
-        }
-      }
-      if (func) {
-        if (equalValTypes(import_type->func()->params(), func->type()->params()) &&
-            equalValTypes(import_type->func()->results(), func->type()->results())) {
-          imports.push_back(func);
-        } else {
-          throw WasmException(fmt::format(
-              "Failed to load WASM module due to an import type mismatch: {}.{}, "
-              "want: {} -> {}, but host exports: {} -> {}",
-              module, name, printValTypes(import_type->func()->params()),
-              printValTypes(import_type->func()->results()), printValTypes(func->type()->params()),
-              printValTypes(func->type()->results())));
-        }
-      } else {
-        throw WasmException(
+      if (it == host_functions_.end()) {
+        throw WasmVmException(
             fmt::format("Failed to load WASM module due to a missing import: {}.{}", module, name));
       }
+      auto func = it->second.get()->callback_.get();
+      if (!equalValTypes(import_type->func()->params(), func->type()->params()) ||
+          !equalValTypes(import_type->func()->results(), func->type()->results())) {
+        throw WasmVmException(fmt::format(
+            "Failed to load WASM module due to an import type mismatch: {}.{}, "
+            "want: {} -> {}, but host exports: {} -> {}",
+            module, name, printValTypes(import_type->func()->params()),
+            printValTypes(import_type->func()->results()), printValTypes(func->type()->params()),
+            printValTypes(func->type()->results())));
+      }
+      imports.push_back(func);
     } break;
 
     case wasm::EXTERN_GLOBAL: {
-      ENVOY_LOG(trace, "[wasm] link(), export host global: {}.{} ({})", module, name,
+      // TODO(PiotrSikora): add support when/if needed.
+      ENVOY_LOG(trace, "link(), export host global: {}.{} ({})", module, name,
                 printValKind(import_type->global()->content()->kind()));
 
-      const wasm::Global* global = nullptr;
-      auto it = host_globals_.find(absl::StrCat(module, ".", name));
-      if (it != host_globals_.end()) {
-        global = it->second.get();
-      } else {
-        it = host_globals_.find(absl::StrCat("envoy", ".", name));
-        if (it != host_globals_.end()) {
-          global = it->second.get();
-        }
-      }
-      if (global) {
-        imports.push_back(global);
-      } else {
-        throw WasmException(
-            fmt::format("Failed to load WASM module due to a missing import: {}.{}", module, name));
-      }
+      throw WasmVmException(
+          fmt::format("Failed to load WASM module due to a missing import: {}.{}", module, name));
     } break;
 
     case wasm::EXTERN_MEMORY: {
-      ENVOY_LOG(trace, "[wasm] link(), export host memory: {}.{} (min: {} max: {})", module, name,
+      ENVOY_LOG(trace, "link(), export host memory: {}.{} (min: {} max: {})", module, name,
                 import_type->memory()->limits().min, import_type->memory()->limits().max);
 
       ASSERT(memory_ == nullptr);
@@ -370,7 +343,7 @@ void V8::link(absl::string_view debug_name, bool needs_emscripten) {
     } break;
 
     case wasm::EXTERN_TABLE: {
-      ENVOY_LOG(trace, "[wasm] link(), export host table: {}.{} (min: {} max: {})", module, name,
+      ENVOY_LOG(trace, "link(), export host table: {}.{} (min: {} max: {})", module, name,
                 import_type->table()->limits().min, import_type->table()->limits().max);
 
       ASSERT(table_ == nullptr);
@@ -387,7 +360,6 @@ void V8::link(absl::string_view debug_name, bool needs_emscripten) {
 
   instance_ = wasm::Instance::make(store_.get(), module_.get(), imports.data());
   RELEASE_ASSERT(instance_ != nullptr, "");
-  module_needs_emscripten_ = needs_emscripten;
 
   const auto export_types = module_.get()->exports();
   const auto exports = instance_.get()->exports();
@@ -402,22 +374,22 @@ void V8::link(absl::string_view debug_name, bool needs_emscripten) {
     switch (export_type->kind()) {
 
     case wasm::EXTERN_FUNC: {
-      ENVOY_LOG(trace, "[wasm] link(), import module func: {} ({} -> {})", name,
+      ENVOY_LOG(trace, "link(), import module func: {} ({} -> {})", name,
                 printValTypes(export_type->func()->params()),
                 printValTypes(export_type->func()->results()));
 
       ASSERT(export_item->func() != nullptr);
-      module_functions_.emplace(name, export_item->func()->copy());
+      module_functions_.insert_or_assign(name, export_item->func()->copy());
     } break;
 
     case wasm::EXTERN_GLOBAL: {
       // TODO(PiotrSikora): add support when/if needed.
-      ENVOY_LOG(trace, "[wasm] link(), import module global: {} ({}) --- IGNORED", name,
+      ENVOY_LOG(trace, "link(), import module global: {} ({}) --- IGNORED", name,
                 printValKind(export_type->global()->content()->kind()));
     } break;
 
     case wasm::EXTERN_MEMORY: {
-      ENVOY_LOG(trace, "[wasm] link(), import module memory: {} (min: {} max: {})", name,
+      ENVOY_LOG(trace, "link(), import module memory: {} (min: {} max: {})", name,
                 export_type->memory()->limits().min, export_type->memory()->limits().max);
 
       ASSERT(export_item->memory() != nullptr);
@@ -427,75 +399,20 @@ void V8::link(absl::string_view debug_name, bool needs_emscripten) {
 
     case wasm::EXTERN_TABLE: {
       // TODO(PiotrSikora): add support when/if needed.
-      ENVOY_LOG(trace, "[wasm] link(), import module table: {} (min: {} max: {}) --- IGNORED", name,
+      ENVOY_LOG(trace, "link(), import module table: {} (min: {} max: {}) --- IGNORED", name,
                 export_type->table()->limits().min, export_type->table()->limits().max);
     } break;
     }
   }
 }
 
-void V8::setMemoryLayout(uint64_t stack_base, uint64_t heap_base, uint64_t heap_base_pointer) {
-  ENVOY_LOG(trace, "[wasm] setMemoryLayout({}, {}, {})", stack_base, heap_base, heap_base_pointer);
-
-  memory_stack_base_ = stack_base;
-  memory_heap_base_ = heap_base;
-  memory_heap_base_pointer_ = heap_base_pointer;
-}
-
-void V8::start(Context* context) {
-  ENVOY_LOG(trace, "[wasm] start()");
-
-  if (module_needs_emscripten_) {
-    if (memory_stack_base_) {
-      // Workaround for Emscripten versions without heap (dynamic) base in metadata.
-      const wasm::Val args[] = {wasm::Val::make(memory_stack_base_),
-                                wasm::Val::make(memory_heap_base_)};
-      callModuleFunction(context, "establishStackSpace", args, nullptr);
-    }
-
-    // Set initial heap base value at DYNAMICTOP_PTR.
-    setMemory(memory_heap_base_pointer_, sizeof(uint32_t), &memory_heap_base_);
-
-    callModuleFunction(context, "globalCtors", nullptr, nullptr);
-
-    for (const auto& kv : module_functions_) {
-      if (absl::StartsWith(kv.first, "__GLOBAL__")) {
-        callModuleFunction(context, kv.first, kv.second.get(), nullptr, nullptr);
-      }
-    }
-  }
-
-  callModuleFunction(context, "__post_instantiate", nullptr, nullptr);
-}
-
-void V8::callModuleFunction(Context* context, absl::string_view function_name,
-                            const wasm::Val args[], wasm::Val results[]) {
-  auto it = module_functions_.find(function_name);
-  if (it != module_functions_.end()) {
-    callModuleFunction(context, function_name, it->second.get(), args, results);
-  }
-}
-
-void V8::callModuleFunction(Context* context, absl::string_view function_name,
-                            const wasm::Func* func, const wasm::Val args[], wasm::Val results[]) {
-  ENVOY_LOG(trace, "[wasm] callModuleFunction(\"{}\")", function_name);
-
-  SaveRestoreContext _saved_context(context);
-  auto trap = func->call(args, results);
-  if (trap) {
-    throw WasmVmException(
-        fmt::format("Function: {} failed: {}", function_name,
-                    absl::string_view(trap->message().get(), trap->message().size())));
-  }
-}
-
 uint64_t V8::getMemorySize() {
-  ENVOY_LOG(trace, "[wasm] getMemorySize()");
+  ENVOY_LOG(trace, "getMemorySize()");
   return memory_->data_size();
 }
 
 absl::optional<absl::string_view> V8::getMemory(uint64_t pointer, uint64_t size) {
-  ENVOY_LOG(trace, "[wasm] getMemory({}, {})", pointer, size);
+  ENVOY_LOG(trace, "getMemory({}, {})", pointer, size);
   ASSERT(memory_ != nullptr);
   if (pointer + size > memory_->data_size()) {
     return absl::nullopt;
@@ -503,19 +420,8 @@ absl::optional<absl::string_view> V8::getMemory(uint64_t pointer, uint64_t size)
   return absl::string_view(memory_->data() + pointer, size);
 }
 
-bool V8::getMemoryOffset(void* host_pointer, uint64_t* vm_pointer) {
-  ENVOY_LOG(trace, "[wasm] getMemoryOffset({})", host_pointer);
-  ASSERT(memory_ != nullptr);
-  if (static_cast<char*>(host_pointer) >= memory_->data() ||
-      static_cast<char*>(host_pointer) <= memory_->data() + memory_->data_size()) {
-    return false;
-  }
-  *vm_pointer = static_cast<char*>(host_pointer) - memory_->data();
-  return true;
-}
-
 bool V8::setMemory(uint64_t pointer, uint64_t size, const void* data) {
-  ENVOY_LOG(trace, "[wasm] setMemory({}, {})", pointer, size);
+  ENVOY_LOG(trace, "setMemory({}, {})", pointer, size);
   ASSERT(memory_ != nullptr);
   if (pointer + size > memory_->data_size()) {
     return false;
@@ -524,9 +430,21 @@ bool V8::setMemory(uint64_t pointer, uint64_t size, const void* data) {
   return true;
 }
 
+bool V8::getWord(uint64_t pointer, Word* word) {
+  ENVOY_LOG(trace, "getWord({})", pointer);
+  constexpr auto size = sizeof(uint32_t);
+  if (pointer + size > memory_->data_size()) {
+    return false;
+  }
+  uint32_t word32;
+  ::memcpy(&word32, memory_->data() + pointer, size);
+  word->u64_ = word32;
+  return true;
+}
+
 bool V8::setWord(uint64_t pointer, Word word) {
-  ENVOY_LOG(trace, "[wasm] setWord({}, {})", pointer, word.u64);
-  auto size = sizeof(uint32_t);
+  ENVOY_LOG(trace, "setWord({}, {})", pointer, word.u64_);
+  constexpr auto size = sizeof(uint32_t);
   if (pointer + size > memory_->data_size()) {
     return false;
   }
@@ -535,22 +453,10 @@ bool V8::setWord(uint64_t pointer, Word word) {
   return true;
 }
 
-template <typename T>
-std::unique_ptr<Global<T>> V8::registerHostGlobalImpl(absl::string_view module_name,
-                                                      absl::string_view name, T initial_value) {
-  ENVOY_LOG(trace, "[wasm] registerHostGlobal(\"{}.{}\", {})", module_name, name, initial_value);
-  auto value = makeVal(initial_value);
-  auto type = wasm::GlobalType::make(wasm::ValType::make(value.kind()), wasm::CONST);
-  auto global = wasm::Global::make(store_.get(), type.get(), value);
-  auto proxy = std::make_unique<V8ProxyForGlobal<T>>(global.get());
-  host_globals_.emplace(absl::StrCat(module_name, ".", name), std::move(global));
-  return proxy;
-}
-
 template <typename... Args>
 void V8::registerHostFunctionImpl(absl::string_view module_name, absl::string_view function_name,
                                   void (*function)(void*, Args...)) {
-  ENVOY_LOG(trace, "[wasm] registerHostFunction(\"{}.{}\")", module_name, function_name);
+  ENVOY_LOG(trace, "registerHostFunction(\"{}.{}\")", module_name, function_name);
   auto data = std::make_unique<FuncData>(absl::StrCat(module_name, ".", function_name));
   auto type = wasm::FuncType::make(convertArgsTupleToValTypes<std::tuple<Args...>>(),
                                    convertArgsTupleToValTypes<std::tuple<>>());
@@ -558,23 +464,25 @@ void V8::registerHostFunctionImpl(absl::string_view module_name, absl::string_vi
       store_.get(), type.get(),
       [](void* data, const wasm::Val params[], wasm::Val[]) -> wasm::own<wasm::Trap> {
         auto func_data = reinterpret_cast<FuncData*>(data);
-        ENVOY_LOG(trace, "[wasm] callHostFunction(\"{}\")", func_data->name);
+        ENVOY_LOG(trace, "[vm->host] {}({})", func_data->name_,
+                  printValues(params, std::tuple_size<std::tuple<Args...>>::value));
         auto args_tuple = convertValTypesToArgsTuple<std::tuple<Args...>>(params);
         auto args = std::tuple_cat(std::make_tuple(current_context_), args_tuple);
-        auto function = reinterpret_cast<void (*)(void*, Args...)>(func_data->raw_func);
+        auto function = reinterpret_cast<void (*)(void*, Args...)>(func_data->raw_func_);
         absl::apply(function, args);
+        ENVOY_LOG(trace, "[vm<-host] {} return: void", func_data->name_);
         return nullptr;
       },
       data.get());
-  data.get()->callback = std::move(func);
-  data.get()->raw_func = reinterpret_cast<void*>(function);
-  host_functions_.emplace(absl::StrCat(module_name, ".", function_name), std::move(data));
+  data->callback_ = std::move(func);
+  data->raw_func_ = reinterpret_cast<void*>(function);
+  host_functions_.insert_or_assign(absl::StrCat(module_name, ".", function_name), std::move(data));
 }
 
 template <typename R, typename... Args>
 void V8::registerHostFunctionImpl(absl::string_view module_name, absl::string_view function_name,
                                   R (*function)(void*, Args...)) {
-  ENVOY_LOG(trace, "[wasm] registerHostFunction(\"{}.{}\")", module_name, function_name);
+  ENVOY_LOG(trace, "registerHostFunction(\"{}.{}\")", module_name, function_name);
   auto data = std::make_unique<FuncData>(absl::StrCat(module_name, ".", function_name));
   auto type = wasm::FuncType::make(convertArgsTupleToValTypes<std::tuple<Args...>>(),
                                    convertArgsTupleToValTypes<std::tuple<R>>());
@@ -582,24 +490,26 @@ void V8::registerHostFunctionImpl(absl::string_view module_name, absl::string_vi
       store_.get(), type.get(),
       [](void* data, const wasm::Val params[], wasm::Val results[]) -> wasm::own<wasm::Trap> {
         auto func_data = reinterpret_cast<FuncData*>(data);
-        ENVOY_LOG(trace, "[wasm] callHostFunction(\"{}\")", func_data->name);
+        ENVOY_LOG(trace, "[vm->host] {}({})", func_data->name_,
+                  printValues(params, sizeof...(Args)));
         auto args_tuple = convertValTypesToArgsTuple<std::tuple<Args...>>(params);
         auto args = std::tuple_cat(std::make_tuple(current_context_), args_tuple);
-        auto function = reinterpret_cast<R (*)(void*, Args...)>(func_data->raw_func);
+        auto function = reinterpret_cast<R (*)(void*, Args...)>(func_data->raw_func_);
         R rvalue = absl::apply(function, args);
         results[0] = makeVal(rvalue);
+        ENVOY_LOG(trace, "[vm<-host] {} return: {}", func_data->name_, rvalue);
         return nullptr;
       },
       data.get());
-  data.get()->callback = std::move(func);
-  data.get()->raw_func = reinterpret_cast<void*>(function);
-  host_functions_.emplace(absl::StrCat(module_name, ".", function_name), std::move(data));
+  data->callback_ = std::move(func);
+  data->raw_func_ = reinterpret_cast<void*>(function);
+  host_functions_.insert_or_assign(absl::StrCat(module_name, ".", function_name), std::move(data));
 }
 
 template <typename... Args>
 void V8::getModuleFunctionImpl(absl::string_view function_name,
                                std::function<void(Context*, Args...)>* function) {
-  ENVOY_LOG(trace, "[wasm] getModuleFunction(\"{}\")", function_name);
+  ENVOY_LOG(trace, "getModuleFunction(\"{}\")", function_name);
   auto it = module_functions_.find(function_name);
   if (it == module_functions_.end()) {
     *function = nullptr;
@@ -611,22 +521,23 @@ void V8::getModuleFunctionImpl(absl::string_view function_name,
     throw WasmVmException(fmt::format("Bad function signature for: {}", function_name));
   }
   *function = [func, function_name](Context* context, Args... args) -> void {
-    ENVOY_LOG(trace, "[wasm] callModuleFunction(\"{}\")", function_name);
-    SaveRestoreContext _saved_context(context);
     wasm::Val params[] = {makeVal(args)...};
+    ENVOY_LOG(trace, "[host->vm] {}({})", function_name, printValues(params, sizeof...(Args)));
+    SaveRestoreContext saved_context(context);
     auto trap = func->call(params, nullptr);
     if (trap) {
-      throw WasmVmException(
+      throw WasmException(
           fmt::format("Function: {} failed: {}", function_name,
                       absl::string_view(trap->message().get(), trap->message().size())));
     }
+    ENVOY_LOG(trace, "[host<-vm] {} return: void", function_name);
   };
 }
 
 template <typename R, typename... Args>
 void V8::getModuleFunctionImpl(absl::string_view function_name,
                                std::function<R(Context*, Args...)>* function) {
-  ENVOY_LOG(trace, "[wasm] getModuleFunction(\"{}\")", function_name);
+  ENVOY_LOG(trace, "getModuleFunction(\"{}\")", function_name);
   auto it = module_functions_.find(function_name);
   if (it == module_functions_.end()) {
     *function = nullptr;
@@ -638,22 +549,23 @@ void V8::getModuleFunctionImpl(absl::string_view function_name,
     throw WasmVmException(fmt::format("Bad function signature for: {}", function_name));
   }
   *function = [func, function_name](Context* context, Args... args) -> R {
-    ENVOY_LOG(trace, "[wasm] callModuleFunction(\"{}\")", function_name);
-    SaveRestoreContext _saved_context(context);
     wasm::Val params[] = {makeVal(args)...};
     wasm::Val results[1];
+    ENVOY_LOG(trace, "[host->vm] {}({})", function_name, printValues(params, sizeof...(Args)));
+    SaveRestoreContext saved_context(context);
     auto trap = func->call(params, results);
     if (trap) {
-      throw WasmVmException(
+      throw WasmException(
           fmt::format("Function: {} failed: {}", function_name,
                       absl::string_view(trap->message().get(), trap->message().size())));
     }
     R rvalue = results[0].get<typename ConvertWordTypeToUint32<R>::type>();
+    ENVOY_LOG(trace, "[host<-vm] {} return: {}", function_name, rvalue);
     return rvalue;
   };
 }
 
-std::unique_ptr<WasmVm> createVm() { return std::make_unique<V8>(); }
+WasmVmPtr createVm(Stats::ScopeSharedPtr scope) { return std::make_unique<V8>(scope); }
 
 } // namespace V8
 } // namespace Wasm

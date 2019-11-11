@@ -13,13 +13,7 @@ envoy_cc_library(
     srcs = ["wavm.cc"],
     hdrs = ["wavm.h"],
     copts = [
-        '-DEMSCRIPTEN_API=""',
-        '-DPLATFORM_API=""',
-        '-DRUNTIME_API=""',
-        '-DLOGGING_API=""',
-        '-DWASM_API=""',
-        '-DWASTPARSE_API=""',
-        '-DIR_API=""',
+        '-DWAVM_API=""',
         "-Wno-non-virtual-dtor",
         "-Wno-old-style-cast",
     ],
@@ -30,6 +24,7 @@ envoy_cc_library(
     deps = [
         "//external:abseil_node_hash_map",
         "//source/common/common:assert_lib",
+        "//source/extensions/common/wasm:wasm_vm_base",
         "//source/extensions/common/wasm:wasm_vm_interface",
         "//source/extensions/common/wasm:well_known_names",
     ],

@@ -6,6 +6,7 @@ EXTENSIONS = {
 
     "envoy.access_loggers.file":                        "//source/extensions/access_loggers/file:config",
     "envoy.access_loggers.http_grpc":                   "//source/extensions/access_loggers/grpc:http_config",
+    "envoy.access_loggers.tcp_grpc":                    "//source/extensions/access_loggers/grpc:tcp_config",
     "envoy.access_loggers.wasm":                        "//source/extensions/access_loggers/wasm:config",
 
     #
@@ -36,9 +37,7 @@ EXTENSIONS = {
     # HTTP filters
     #
 
-    # NOTE: The adaptive concurrency filter does not have a proper filter
-    #       implemented right now. We are just referencing the filter lib here.
-    "envoy.filters.http.adaptive_concurrency":          "//source/extensions/filters/http/adaptive_concurrency:adaptive_concurrency_filter_lib",
+    "envoy.filters.http.adaptive_concurrency":          "//source/extensions/filters/http/adaptive_concurrency:config",
     "envoy.filters.http.buffer":                        "//source/extensions/filters/http/buffer:config",
     "envoy.filters.http.cors":                          "//source/extensions/filters/http/cors:config",
     "envoy.filters.http.csrf":                          "//source/extensions/filters/http/csrf:config",
@@ -49,6 +48,7 @@ EXTENSIONS = {
     "envoy.filters.http.grpc_http1_bridge":             "//source/extensions/filters/http/grpc_http1_bridge:config",
     "envoy.filters.http.grpc_http1_reverse_bridge":     "//source/extensions/filters/http/grpc_http1_reverse_bridge:config",
     "envoy.filters.http.grpc_json_transcoder":          "//source/extensions/filters/http/grpc_json_transcoder:config",
+    "envoy.filters.http.grpc_stats":                    "//source/extensions/filters/http/grpc_stats:config",
     "envoy.filters.http.grpc_web":                      "//source/extensions/filters/http/grpc_web:config",
     "envoy.filters.http.gzip":                          "//source/extensions/filters/http/gzip:config",
     "envoy.filters.http.header_to_metadata":            "//source/extensions/filters/http/header_to_metadata:config",
@@ -95,9 +95,10 @@ EXTENSIONS = {
     "envoy.filters.network.ratelimit":                  "//source/extensions/filters/network/ratelimit:config",
     "envoy.filters.network.rbac":                       "//source/extensions/filters/network/rbac:config",
     "envoy.filters.network.redis_proxy":                "//source/extensions/filters/network/redis_proxy:config",
+    "envoy.filters.network.sni_cluster":                "//source/extensions/filters/network/sni_cluster:config",
     "envoy.filters.network.tcp_proxy":                  "//source/extensions/filters/network/tcp_proxy:config",
     "envoy.filters.network.thrift_proxy":               "//source/extensions/filters/network/thrift_proxy:config",
-    "envoy.filters.network.sni_cluster":                "//source/extensions/filters/network/sni_cluster:config",
+    "envoy.filters.network.wasm":                       "//source/extensions/filters/network/wasm:config",
     "envoy.filters.network.zookeeper_proxy":            "//source/extensions/filters/network/zookeeper_proxy:config",
 
     #
@@ -132,6 +133,7 @@ EXTENSIONS = {
     "envoy.tracers.datadog":                            "//source/extensions/tracers/datadog:config",
     "envoy.tracers.zipkin":                             "//source/extensions/tracers/zipkin:config",
     "envoy.tracers.opencensus":                         "//source/extensions/tracers/opencensus:config",
+    "envoy.tracers.xray":                               "//source/extensions/tracers/xray:config",
 
     #
     # Transport sockets

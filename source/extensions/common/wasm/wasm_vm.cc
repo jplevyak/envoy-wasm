@@ -20,32 +20,26 @@ namespace Wasm {
 thread_local Envoy::Extensions::Common::Wasm::Context* current_context_ = nullptr;
 thread_local uint32_t effective_context_id_ = 0;
 
-std::unique_ptr<WasmVm> createWasmVm(absl::string_view wasm_vm) {
-  if (wasm_vm.empty()) {
-#if defined(ENVOY_WASM_V8) && !defined(ENVOY_WASM_WAVM)
-    return V8::createVm();
-#elif defined(ENVOY_WASM_WAVM) && !defined(ENVOY_WASM_V8)
-    return Wavm::createVm();
-#else
-    throw WasmException("Failed to create WASM VM with unspecified runtime.");
-#endif
-  } else if (wasm_vm == WasmVmNames::get().Null) {
-    return Null::createVm();
+WasmVmPtr createWasmVm(absl::string_view runtime, Stats::ScopeSharedPtr scope) {
+  if (runtime.empty()) {
+    throw WasmVmException("Failed to create WASM VM with unspecified runtime.");
+  } else if (runtime == WasmRuntimeNames::get().Null) {
+    return Null::createVm(scope);
   } else
 #ifdef ENVOY_WASM_V8
-      if (wasm_vm == WasmVmNames::get().v8) {
-    return V8::createVm();
+      if (runtime == WasmRuntimeNames::get().V8) {
+    return V8::createVm(scope);
   } else
 #endif
 #ifdef ENVOY_WASM_WAVM
-      if (wasm_vm == WasmVmNames::get().Wavm) {
-    return Wavm::createVm();
+      if (runtime == WasmRuntimeNames::get().Wavm) {
+    return Wavm::createVm(scope);
   } else
 #endif
   {
-    throw WasmException(fmt::format(
+    throw WasmVmException(fmt::format(
         "Failed to create WASM VM using {} runtime. Envoy was compiled without support for it.",
-        wasm_vm));
+        runtime));
   }
 }
 

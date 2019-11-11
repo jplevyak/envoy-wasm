@@ -17,10 +17,17 @@ namespace Common {
 namespace Wasm {
 namespace Null {
 
-std::unique_ptr<WasmVm> NullVm::clone() { return std::make_unique<NullVm>(*this); }
+VmGlobalStats global_stats_;
 
+WasmVmPtr NullVm::clone() {
+  auto cloned_null_vm = std::make_unique<NullVm>(*this);
+  cloned_null_vm->load(plugin_name_, false /* unused */);
+  return cloned_null_vm;
+}
+
+// "Load" the plugin by obtaining a pointer to it from the factory.
 bool NullVm::load(const std::string& name, bool /* allow_precompiled */) {
-  auto factory = Registry::FactoryRegistry<NullPluginFactory>::getFactory(name);
+  auto factory = Registry::FactoryRegistry<NullVmPluginFactory>::getFactory(name);
   if (!factory) {
     return false;
   }
@@ -29,20 +36,11 @@ bool NullVm::load(const std::string& name, bool /* allow_precompiled */) {
   return true;
 }
 
-void NullVm::link(absl::string_view /* name */, bool /* needs_emscripten */) {}
-
-void NullVm::makeModule(absl::string_view /* name */) {
-  // NullVm does not advertize code as emscripten so this will not get called.
-  NOT_REACHED_GCOVR_EXCL_LINE;
-}
-
-void NullVm::start(Common::Wasm::Context* context) {
-  SaveRestoreContext saved_context(context);
-  plugin_->start();
-}
+void NullVm::link(absl::string_view /* name */) {}
 
 uint64_t NullVm::getMemorySize() { return std::numeric_limits<uint64_t>::max(); }
 
+// NulVm pointers are just native pointers.
 absl::optional<absl::string_view> NullVm::getMemory(uint64_t pointer, uint64_t size) {
   if (pointer == 0 && size != 0) {
     return absl::nullopt;
@@ -50,14 +48,13 @@ absl::optional<absl::string_view> NullVm::getMemory(uint64_t pointer, uint64_t s
   return absl::string_view(reinterpret_cast<char*>(pointer), static_cast<size_t>(size));
 }
 
-bool NullVm::getMemoryOffset(void* host_pointer, uint64_t* vm_pointer) {
-  *vm_pointer = reinterpret_cast<uint64_t>(host_pointer);
-  return true;
-}
-
 bool NullVm::setMemory(uint64_t pointer, uint64_t size, const void* data) {
-  if ((pointer == 0 || data == nullptr) && size != 0) {
-    return false;
+  if ((pointer == 0 || data == nullptr)) {
+    if (size != 0) {
+      return false;
+    } else {
+      return true;
+    }
   }
   auto p = reinterpret_cast<char*>(pointer);
   memcpy(p, data, size);
@@ -69,11 +66,20 @@ bool NullVm::setWord(uint64_t pointer, Word data) {
     return false;
   }
   auto p = reinterpret_cast<char*>(pointer);
-  memcpy(p, &data.u64, sizeof(data.u64));
+  memcpy(p, &data.u64_, sizeof(data.u64_));
   return true;
 }
 
-absl::string_view NullVm::getUserSection(absl::string_view /* name */) {
+bool NullVm::getWord(uint64_t pointer, Word* data) {
+  if (pointer == 0) {
+    return false;
+  }
+  auto p = reinterpret_cast<char*>(pointer);
+  memcpy(&data->u64_, p, sizeof(data->u64_));
+  return true;
+}
+
+absl::string_view NullVm::getCustomSection(absl::string_view /* name */) {
   // Return nothing: there is no WASM file.
   return {};
 }

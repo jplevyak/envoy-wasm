@@ -9,6 +9,7 @@
 #include "common/common/assert.h"
 
 #include "extensions/common/wasm/null/null_vm_plugin.h"
+#include "extensions/common/wasm/wasm_vm_base.h"
 #include "extensions/common/wasm/well_known_names.h"
 
 namespace Envoy {
@@ -17,26 +18,30 @@ namespace Common {
 namespace Wasm {
 namespace Null {
 
-struct NullVm : public WasmVm {
-  NullVm() = default;
-  NullVm(const NullVm& other) { load(other.plugin_name_, false /* unused */); }
-  ~NullVm() override{};
+extern VmGlobalStats global_stats_;
+
+// The NullVm wraps a C++ WASM plugin which has been compiled with the WASM API
+// and linked directly into the Envoy process. This is useful for development
+// in that it permits the debugger to set breakpoints in both Envoy and the plugin.
+struct NullVm : public WasmVmBase {
+  NullVm(Stats::ScopeSharedPtr scope)
+      : WasmVmBase(scope, &global_stats_, WasmRuntimeNames::get().Null) {}
+  NullVm(const NullVm& other)
+      : WasmVmBase(other.scope_, &global_stats_, WasmRuntimeNames::get().Null),
+        plugin_name_(other.plugin_name_) {}
 
   // WasmVm
-  absl::string_view vm() override { return WasmVmNames::get().Null; }
-  bool clonable() override { return true; };
-  std::unique_ptr<WasmVm> clone() override;
+  absl::string_view runtime() override { return WasmRuntimeNames::get().Null; }
+  bool cloneable() override { return true; };
+  WasmVmPtr clone() override;
   bool load(const std::string& code, bool allow_precompiled) override;
-  void link(absl::string_view debug_name, bool needs_emscripten) override;
-  void setMemoryLayout(uint64_t, uint64_t, uint64_t) override {}
-  void start(Common::Wasm::Context* context) override;
+  void link(absl::string_view debug_name) override;
   uint64_t getMemorySize() override;
   absl::optional<absl::string_view> getMemory(uint64_t pointer, uint64_t size) override;
-  bool getMemoryOffset(void* host_pointer, uint64_t* vm_pointer) override;
   bool setMemory(uint64_t pointer, uint64_t size, const void* data) override;
   bool setWord(uint64_t pointer, Word data) override;
-  void makeModule(absl::string_view name) override;
-  absl::string_view getUserSection(absl::string_view name) override;
+  bool getWord(uint64_t pointer, Word* data) override;
+  absl::string_view getCustomSection(absl::string_view name) override;
 
 #define _FORWARD_GET_FUNCTION(_T)                                                                  \
   void getFunction(absl::string_view function_name, _T* f) override {                              \
@@ -45,21 +50,12 @@ struct NullVm : public WasmVm {
   FOR_ALL_WASM_VM_EXPORTS(_FORWARD_GET_FUNCTION)
 #undef _FORWARD_GET_FUNCTION
 
-  // These are noops for NullVm.
+  // These are not needed for NullVm which invokes the handlers directly.
 #define _REGISTER_CALLBACK(_T)                                                                     \
   void registerCallback(absl::string_view, absl::string_view, _T,                                  \
                         typename ConvertFunctionTypeWordToUint32<_T>::type) override{};
   FOR_ALL_WASM_VM_IMPORTS(_REGISTER_CALLBACK)
 #undef _REGISTER_CALLBACK
-
-  // NullVm does not advertize code as emscripten so this will not get called.
-  std::unique_ptr<Global<double>> makeGlobal(absl::string_view, absl::string_view,
-                                             double) override {
-    NOT_REACHED_GCOVR_EXCL_LINE;
-  };
-  std::unique_ptr<Global<Word>> makeGlobal(absl::string_view, absl::string_view, Word) override {
-    NOT_REACHED_GCOVR_EXCL_LINE;
-  };
 
   std::string plugin_name_;
   std::unique_ptr<NullVmPlugin> plugin_;

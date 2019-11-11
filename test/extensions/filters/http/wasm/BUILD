@@ -14,6 +14,7 @@ envoy_package()
 
 envoy_extension_cc_test(
     name = "wasm_filter_test",
+    size = "large",
     srcs = ["wasm_filter_test.cc"],
     data = [
         "//test/extensions/filters/http/wasm/test_data:modules",
@@ -21,6 +22,7 @@ envoy_extension_cc_test(
     extension_name = "envoy.filters.http.wasm",
     deps = [
         "//source/common/stream_info:stream_info_lib",
+        "//source/extensions/common/wasm:wasm_interoperation_lib",
         "//source/extensions/common/wasm/null/sample_plugin:plugin",
         "//source/extensions/filters/http/wasm:wasm_filter_lib",
         "//test/mocks/grpc:grpc_mocks",
@@ -45,6 +47,8 @@ envoy_extension_cc_test(
     extension_name = "envoy.filters.http.wasm",
     deps = [
         "//source/common/common:base64_lib",
+        "//source/common/common:hex_lib",
+        "//source/common/crypto:utility_lib",
         "//source/extensions/common/wasm:wasm_lib",
         "//source/extensions/filters/http/wasm:config",
         "//test/mocks/server:server_mocks",
@@ -54,6 +58,7 @@ envoy_extension_cc_test(
 
 envoy_extension_cc_test(
     name = "wasm_filter_stress_test",
+    size = "large",
     srcs = envoy_select_wasm(["wasm_filter_stress_test.cc"]),
     data = [
         "//test/extensions/filters/http/wasm/test_data:modules",
@@ -64,7 +69,7 @@ envoy_extension_cc_test(
         "//source/extensions/common/wasm:wasm_lib",
         "//source/extensions/filters/http/wasm:config",
         "//source/extensions/wasm:config",
-        "//test/proto:helloworld_proto_cc",
+        "//test/proto:helloworld_proto_cc_proto",
         "//test/stress:stress_test_lib",
         "//test/test_common:environment_lib",
     ],

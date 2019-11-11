@@ -25,8 +25,9 @@ public:
   createFilterFactoryFromProto(const Protobuf::Message& proto_config,
                                const std::string& stats_prefix,
                                Server::Configuration::FactoryContext& context) override {
-    return createFilterFactoryFromProtoTyped(
-        MessageUtil::downcastAndValidate<const ConfigProto&>(proto_config), stats_prefix, context);
+    return createFilterFactoryFromProtoTyped(MessageUtil::downcastAndValidate<const ConfigProto&>(
+                                                 proto_config, context.messageValidationVisitor()),
+                                             stats_prefix, context);
   }
 
   ProtobufTypes::MessagePtr createEmptyConfigProto() override {
@@ -39,9 +40,11 @@ public:
 
   Router::RouteSpecificFilterConfigConstSharedPtr
   createRouteSpecificFilterConfig(const Protobuf::Message& proto_config,
-                                  Server::Configuration::FactoryContext& context) override {
+                                  Server::Configuration::ServerFactoryContext& context,
+                                  ProtobufMessage::ValidationVisitor& validator) override {
     return createRouteSpecificFilterConfigTyped(
-        MessageUtil::downcastAndValidate<const RouteConfigProto&>(proto_config), context);
+        MessageUtil::downcastAndValidate<const RouteConfigProto&>(proto_config, validator), context,
+        validator);
   }
 
   std::string name() override { return name_; }
@@ -57,7 +60,8 @@ private:
 
   virtual Router::RouteSpecificFilterConfigConstSharedPtr
   createRouteSpecificFilterConfigTyped(const RouteConfigProto&,
-                                       Server::Configuration::FactoryContext&) {
+                                       Server::Configuration::ServerFactoryContext&,
+                                       ProtobufMessage::ValidationVisitor&) {
     return nullptr;
   }
 

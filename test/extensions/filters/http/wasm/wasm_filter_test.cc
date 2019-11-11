@@ -6,6 +6,7 @@
 #include "common/stream_info/stream_info_impl.h"
 
 #include "extensions/common/wasm/wasm.h"
+#include "extensions/common/wasm/wasm_state.h"
 #include "extensions/filters/http/wasm/wasm_filter.h"
 
 #include "test/mocks/grpc/mocks.h"
@@ -48,14 +49,14 @@ namespace Wasm {
 
 class TestFilter : public Envoy::Extensions::Common::Wasm::Context {
 public:
-  TestFilter(Wasm* wasm, uint32_t root_context_id)
-      : Envoy::Extensions::Common::Wasm::Context(wasm, root_context_id) {}
+  TestFilter(Wasm* wasm, uint32_t root_context_id,
+             Envoy::Extensions::Common::Wasm::PluginSharedPtr plugin)
+      : Envoy::Extensions::Common::Wasm::Context(wasm, root_context_id, plugin) {}
 
   void scriptLog(spdlog::level::level_enum level, absl::string_view message) override {
     scriptLog_(level, message);
   }
   MOCK_METHOD2(scriptLog_, void(spdlog::level::level_enum level, absl::string_view message));
-  MOCK_METHOD1(getProtocol, std::string(Envoy::Extensions::Common::Wasm::StreamType));
 };
 
 class TestRoot : public Envoy::Extensions::Common::Wasm::Context {
@@ -76,35 +77,53 @@ public:
   void setupConfig(const std::string& code) {
     root_context_ = new TestRoot();
     envoy::config::filter::http::wasm::v2::Wasm proto_config;
-    proto_config.set_vm_id("vm_id");
-    proto_config.mutable_vm_config()->set_vm(absl::StrCat("envoy.wasm.vm.", GetParam()));
-    proto_config.mutable_vm_config()->mutable_code()->set_inline_bytes(code);
+    proto_config.mutable_config()->mutable_vm_config()->set_vm_id("vm_id");
+    proto_config.mutable_config()->mutable_vm_config()->set_runtime(
+        absl::StrCat("envoy.wasm.runtime.", GetParam()));
+    proto_config.mutable_config()
+        ->mutable_vm_config()
+        ->mutable_code()
+        ->mutable_local()
+        ->set_inline_bytes(code);
     Api::ApiPtr api = Api::createApiForTest(stats_store_);
     scope_ = Stats::ScopeSharedPtr(stats_store_.createScope("wasm."));
-    wasm_ = Extensions::Common::Wasm::createWasmForTesting(
-        proto_config.vm_id(), proto_config.vm_config(), proto_config.root_id(), cluster_manager_,
-        dispatcher_, *api, *scope_, Envoy::Extensions::Common::Wasm::PluginDirection::Inbound,
-        local_info_, &listener_metadata_, nullptr,
-        std::unique_ptr<Envoy::Extensions::Common::Wasm::Context>(root_context_));
+    auto name = "";
+    auto root_id = "";
+    auto vm_id = "";
+    plugin_ = std::make_shared<Extensions::Common::Wasm::Plugin>(
+        name, root_id, vm_id, envoy::api::v2::core::TrafficDirection::INBOUND, local_info_,
+        &listener_metadata_);
+    Extensions::Common::Wasm::createWasmForTesting(
+        proto_config.config().vm_config(), plugin_, scope_, cluster_manager_, init_manager_,
+        dispatcher_, *api, std::unique_ptr<Envoy::Extensions::Common::Wasm::Context>(root_context_),
+        remote_data_provider_, [this](std::shared_ptr<Wasm> wasm) { wasm_ = wasm; });
   }
 
   void setupNullConfig(const std::string& name) {
     root_context_ = new TestRoot();
     envoy::config::filter::http::wasm::v2::Wasm proto_config;
-    proto_config.set_vm_id("vm_id");
-    proto_config.mutable_vm_config()->set_vm("envoy.wasm.vm.null");
-    proto_config.mutable_vm_config()->mutable_code()->set_inline_bytes(name);
+    proto_config.mutable_config()->mutable_vm_config()->set_vm_id("vm_id");
+    proto_config.mutable_config()->mutable_vm_config()->set_runtime("envoy.wasm.runtime.null");
+    proto_config.mutable_config()
+        ->mutable_vm_config()
+        ->mutable_code()
+        ->mutable_local()
+        ->set_inline_bytes(name);
     Api::ApiPtr api = Api::createApiForTest(stats_store_);
     scope_ = Stats::ScopeSharedPtr(stats_store_.createScope("wasm."));
-    wasm_ = Extensions::Common::Wasm::createWasmForTesting(
-        proto_config.vm_id(), proto_config.vm_config(), proto_config.root_id(), cluster_manager_,
-        dispatcher_, *api, *scope_, Envoy::Extensions::Common::Wasm::PluginDirection::Inbound,
-        local_info_, &listener_metadata_, nullptr,
-        std::unique_ptr<Envoy::Extensions::Common::Wasm::Context>(root_context_));
+    auto root_id = "";
+    auto vm_id = "";
+    plugin_ = std::make_shared<Extensions::Common::Wasm::Plugin>(
+        name, root_id, vm_id, envoy::api::v2::core::TrafficDirection::INBOUND, local_info_,
+        &listener_metadata_);
+    Extensions::Common::Wasm::createWasmForTesting(
+        proto_config.config().vm_config(), plugin_, scope_, cluster_manager_, init_manager_,
+        dispatcher_, *api, std::unique_ptr<Envoy::Extensions::Common::Wasm::Context>(root_context_),
+        remote_data_provider_, [this](std::shared_ptr<Wasm> wasm) { wasm_ = wasm; });
   }
 
   void setupFilter() {
-    filter_ = std::make_unique<TestFilter>(wasm_.get(), wasm_->getRootContext("")->id());
+    filter_ = std::make_unique<TestFilter>(wasm_.get(), wasm_->getRootContext("")->id(), plugin_);
     filter_->setDecoderFilterCallbacks(decoder_callbacks_);
     filter_->setEncoderFilterCallbacks(encoder_callbacks_);
   }
@@ -114,7 +133,9 @@ public:
   NiceMock<ThreadLocal::MockInstance> tls_;
   NiceMock<Event::MockDispatcher> dispatcher_;
   NiceMock<Upstream::MockClusterManager> cluster_manager_;
+  NiceMock<Init::MockManager> init_manager_;
   std::shared_ptr<Wasm> wasm_;
+  std::shared_ptr<Common::Wasm::Plugin> plugin_;
   std::unique_ptr<TestFilter> filter_;
   NiceMock<Envoy::Ssl::MockConnectionInfo> ssl_;
   NiceMock<Envoy::Network::MockConnection> connection_;
@@ -124,6 +145,7 @@ public:
   NiceMock<LocalInfo::MockLocalInfo> local_info_;
   envoy::api::v2::core::Metadata listener_metadata_;
   TestRoot* root_context_ = nullptr;
+  Config::DataSource::RemoteAsyncDataProviderPtr remote_data_provider_;
 };
 
 #if defined(ENVOY_WASM_V8) || defined(ENVOY_WASM_WAVM)
@@ -150,12 +172,14 @@ TEST_P(WasmHttpFilterTest, HeadersOnlyRequestHeadersOnly) {
   setupConfig(TestEnvironment::readFileToStringForTest(TestEnvironment::substitute(
       "{{ test_rundir }}/test/extensions/filters/http/wasm/test_data/headers_cpp.wasm")));
   setupFilter();
-  EXPECT_CALL(*filter_, getProtocol(Common::Wasm::StreamType::Request)).WillOnce(Return("h8"));
+  absl::optional<Http::Protocol> protocol = Http::Protocol::Http11;
+  EXPECT_CALL(request_stream_info_, protocol()).WillRepeatedly(Return(protocol));
+  EXPECT_CALL(encoder_callbacks_, streamInfo()).WillRepeatedly(ReturnRef(request_stream_info_));
   EXPECT_CALL(*filter_,
               scriptLog_(spdlog::level::debug, Eq(absl::string_view("onRequestHeaders 2"))));
   EXPECT_CALL(*filter_, scriptLog_(spdlog::level::info, Eq(absl::string_view("header path /"))));
   EXPECT_CALL(*filter_, scriptLog_(spdlog::level::info,
-                                   Eq(absl::string_view("request protocol response h8"))));
+                                   Eq(absl::string_view("request protocol response HTTP/1.1"))));
   EXPECT_CALL(*filter_, scriptLog_(spdlog::level::warn, Eq(absl::string_view("onDone 2"))));
   Http::TestHeaderMapImpl request_headers{{":path", "/"}, {"server", "envoy"}};
   EXPECT_EQ(Http::FilterHeadersStatus::Continue, filter_->decodeHeaders(request_headers, true));
@@ -169,12 +193,9 @@ TEST_P(WasmHttpFilterTest, HeadersOnlyRequestHeadersAndBody) {
   setupConfig(TestEnvironment::readFileToStringForTest(TestEnvironment::substitute(
       "{{ test_rundir }}/test/extensions/filters/http/wasm/test_data/headers_cpp.wasm")));
   setupFilter();
-  EXPECT_CALL(*filter_, getProtocol(Common::Wasm::StreamType::Request)).WillOnce(Return("h8"));
   EXPECT_CALL(*filter_,
               scriptLog_(spdlog::level::debug, Eq(absl::string_view("onRequestHeaders 2"))));
   EXPECT_CALL(*filter_, scriptLog_(spdlog::level::info, Eq(absl::string_view("header path /"))));
-  EXPECT_CALL(*filter_, scriptLog_(spdlog::level::info,
-                                   Eq(absl::string_view("request protocol response h8"))));
   EXPECT_CALL(*filter_,
               scriptLog_(spdlog::level::err, Eq(absl::string_view("onRequestBody hello"))));
   EXPECT_CALL(*filter_, scriptLog_(spdlog::level::warn, Eq(absl::string_view("onDone 2"))));
@@ -190,12 +211,9 @@ TEST_P(WasmHttpFilterTest, AccessLog) {
   setupConfig(TestEnvironment::readFileToStringForTest(TestEnvironment::substitute(
       "{{ test_rundir }}/test/extensions/filters/http/wasm/test_data/headers_cpp.wasm")));
   setupFilter();
-  EXPECT_CALL(*filter_, getProtocol(Common::Wasm::StreamType::Request)).WillOnce(Return("h8"));
   EXPECT_CALL(*filter_,
               scriptLog_(spdlog::level::debug, Eq(absl::string_view("onRequestHeaders 2"))));
   EXPECT_CALL(*filter_, scriptLog_(spdlog::level::info, Eq(absl::string_view("header path /"))));
-  EXPECT_CALL(*filter_, scriptLog_(spdlog::level::info,
-                                   Eq(absl::string_view("request protocol response h8"))));
   EXPECT_CALL(*filter_,
               scriptLog_(spdlog::level::err, Eq(absl::string_view("onRequestBody hello"))));
   EXPECT_CALL(*filter_, scriptLog_(spdlog::level::warn, Eq(absl::string_view("onLog 2 /"))));
@@ -249,6 +267,51 @@ TEST_P(WasmHttpFilterTest, AsyncCall) {
   }
 }
 
+TEST_P(WasmHttpFilterTest, AsyncCallAfterDestroyed) {
+  setupConfig(TestEnvironment::readFileToStringForTest(TestEnvironment::substitute(
+      "{{ test_rundir }}/test/extensions/filters/http/wasm/test_data/async_call_cpp.wasm")));
+  setupFilter();
+
+  Http::TestHeaderMapImpl request_headers{{":path", "/"}};
+  Http::MockAsyncClientRequest request(&cluster_manager_.async_client_);
+  Http::AsyncClient::Callbacks* callbacks = nullptr;
+  EXPECT_CALL(cluster_manager_, get(Eq("cluster")));
+  EXPECT_CALL(cluster_manager_, httpAsyncClientForCluster("cluster"));
+  EXPECT_CALL(cluster_manager_.async_client_, send_(_, _, _))
+      .WillOnce(
+          Invoke([&](Http::MessagePtr& message, Http::AsyncClient::Callbacks& cb,
+                     const Http::AsyncClient::RequestOptions&) -> Http::AsyncClient::Request* {
+            EXPECT_EQ((Http::TestHeaderMapImpl{{":method", "POST"},
+                                               {":path", "/"},
+                                               {":authority", "foo"},
+                                               {"content-length", "11"}}),
+                      message->headers());
+            EXPECT_EQ((Http::TestHeaderMapImpl{{"trail", "cow"}}), *message->trailers());
+            callbacks = &cb;
+            return &request;
+          }));
+
+  EXPECT_EQ(Http::FilterHeadersStatus::StopIteration,
+            filter_->decodeHeaders(request_headers, false));
+
+  EXPECT_CALL(request, cancel()).WillOnce([&]() { callbacks = nullptr; });
+
+  // Destroy the Context, Plugin and VM.
+  filter_.reset();
+  plugin_.reset();
+  wasm_.reset();
+
+  Http::MessagePtr response_message(new Http::ResponseMessageImpl(
+      Http::HeaderMapPtr{new Http::TestHeaderMapImpl{{":status", "200"}}}));
+  response_message->body().reset(new Buffer::OwnedImpl("response"));
+
+  // (Don't) Make the callback on the destroyed VM.
+  EXPECT_EQ(callbacks, nullptr);
+  if (callbacks) {
+    callbacks->onSuccess(std::move(response_message));
+  }
+}
+
 TEST_P(WasmHttpFilterTest, GrpcCall) {
   setupConfig(TestEnvironment::readFileToStringForTest(TestEnvironment::substitute(
       "{{ test_rundir }}/test/extensions/filters/http/wasm/test_data/grpc_call_cpp.wasm")));
@@ -260,22 +323,20 @@ TEST_P(WasmHttpFilterTest, GrpcCall) {
   auto async_client = std::make_unique<Grpc::MockAsyncClient>();
   Tracing::Span* parent_span{};
   EXPECT_CALL(*async_client, sendRaw(_, _, _, _, _, _))
-      .WillOnce(Invoke(
-          [&](absl::string_view service_full_name, absl::string_view method_name,
-              Buffer::InstancePtr&& message, Grpc::RawAsyncRequestCallbacks& cb,
-              Tracing::Span& span,
-              const absl::optional<std::chrono::milliseconds>& timeout) -> Grpc::AsyncRequest* {
-            EXPECT_EQ(service_full_name, "service");
-            EXPECT_EQ(method_name, "method");
-            ProtobufWkt::Value value;
-            EXPECT_TRUE(
-                value.ParseFromArray(message->linearize(message->length()), message->length()));
-            EXPECT_EQ(value.string_value(), "request");
-            callbacks = &cb;
-            parent_span = &span;
-            EXPECT_EQ(timeout->count(), 1000);
-            return &request;
-          }));
+      .WillOnce(Invoke([&](absl::string_view service_full_name, absl::string_view method_name,
+                           Buffer::InstancePtr&& message, Grpc::RawAsyncRequestCallbacks& cb,
+                           Tracing::Span& span, const Http::AsyncClient::RequestOptions& options)
+                           -> Grpc::AsyncRequest* {
+        EXPECT_EQ(service_full_name, "service");
+        EXPECT_EQ(method_name, "method");
+        ProtobufWkt::Value value;
+        EXPECT_TRUE(value.ParseFromArray(message->linearize(message->length()), message->length()));
+        EXPECT_EQ(value.string_value(), "request");
+        callbacks = &cb;
+        parent_span = &span;
+        EXPECT_EQ(options.timeout->count(), 1000);
+        return &request;
+      }));
   EXPECT_CALL(*client_factory, create).WillOnce(Invoke([&]() -> Grpc::RawAsyncClientPtr {
     return std::move(async_client);
   }));
@@ -302,6 +363,64 @@ TEST_P(WasmHttpFilterTest, GrpcCall) {
   }
 }
 
+TEST_P(WasmHttpFilterTest, GrpcCallAfterDestroyed) {
+  setupConfig(TestEnvironment::readFileToStringForTest(TestEnvironment::substitute(
+      "{{ test_rundir }}/test/extensions/filters/http/wasm/test_data/grpc_call_cpp.wasm")));
+  setupFilter();
+  Grpc::MockAsyncRequest request;
+  Grpc::RawAsyncRequestCallbacks* callbacks = nullptr;
+  Grpc::MockAsyncClientManager client_manager;
+  auto client_factory = std::make_unique<Grpc::MockAsyncClientFactory>();
+  auto async_client = std::make_unique<Grpc::MockAsyncClient>();
+  Tracing::Span* parent_span{};
+  EXPECT_CALL(*async_client, sendRaw(_, _, _, _, _, _))
+      .WillOnce(Invoke([&](absl::string_view service_full_name, absl::string_view method_name,
+                           Buffer::InstancePtr&& message, Grpc::RawAsyncRequestCallbacks& cb,
+                           Tracing::Span& span, const Http::AsyncClient::RequestOptions& options)
+                           -> Grpc::AsyncRequest* {
+        EXPECT_EQ(service_full_name, "service");
+        EXPECT_EQ(method_name, "method");
+        ProtobufWkt::Value value;
+        EXPECT_TRUE(value.ParseFromArray(message->linearize(message->length()), message->length()));
+        EXPECT_EQ(value.string_value(), "request");
+        callbacks = &cb;
+        parent_span = &span;
+        EXPECT_EQ(options.timeout->count(), 1000);
+        return &request;
+      }));
+  EXPECT_CALL(*client_factory, create).WillOnce(Invoke([&]() -> Grpc::RawAsyncClientPtr {
+    return std::move(async_client);
+  }));
+  EXPECT_CALL(cluster_manager_, grpcAsyncClientManager())
+      .WillOnce(Invoke([&]() -> Grpc::AsyncClientManager& { return client_manager; }));
+  EXPECT_CALL(client_manager, factoryForGrpcService(_, _, _))
+      .WillOnce(
+          Invoke([&](const envoy::api::v2::core::GrpcService&, Stats::Scope&,
+                     bool) -> Grpc::AsyncClientFactoryPtr { return std::move(client_factory); }));
+  Http::TestHeaderMapImpl request_headers{{":path", "/"}};
+
+  EXPECT_EQ(Http::FilterHeadersStatus::StopIteration,
+            filter_->decodeHeaders(request_headers, false));
+
+  EXPECT_CALL(request, cancel()).WillOnce([&]() { callbacks = nullptr; });
+
+  // Destroy the Context, Plugin and VM.
+  filter_.reset();
+  plugin_.reset();
+  wasm_.reset();
+
+  ProtobufWkt::Value value;
+  value.set_string_value("response");
+  std::string response_string;
+  EXPECT_TRUE(value.SerializeToString(&response_string));
+  auto response = std::make_unique<Buffer::OwnedImpl>(response_string);
+  EXPECT_EQ(callbacks, nullptr);
+  NiceMock<Tracing::MockSpan> span;
+  if (callbacks) {
+    callbacks->onSuccessRaw(std::move(response), span);
+  }
+}
+
 TEST_P(WasmHttpFilterTest, Metadata) {
   setupConfig(TestEnvironment::readFileToStringForTest(TestEnvironment::substitute(
       "{{ test_rundir }}/test/extensions/filters/http/wasm/test_data/metadata_cpp.wasm")));
@@ -310,7 +429,7 @@ TEST_P(WasmHttpFilterTest, Metadata) {
   ProtobufWkt::Value node_val;
   node_val.set_string_value("wasm_node_get_value");
   (*node_data.mutable_metadata()->mutable_fields())["wasm_node_get_key"] = node_val;
-  EXPECT_CALL(local_info_, node()).WillOnce(ReturnRef(node_data));
+  EXPECT_CALL(local_info_, node()).WillRepeatedly(ReturnRef(node_data));
   EXPECT_CALL(*root_context_, scriptLog_(spdlog::level::debug,
                                          Eq(absl::string_view("onTick wasm_node_get_value"))));
 
@@ -331,16 +450,7 @@ TEST_P(WasmHttpFilterTest, Metadata) {
 
   wasm_->tickHandler(root_context_->id());
 
-  EXPECT_CALL(decoder_callbacks_, streamInfo()).WillRepeatedly(ReturnRef(request_stream_info_));
-  std::string serialized_value;
-  ProtobufWkt::Value value;
-  value.set_string_value("wasm_request_set_value");
-  EXPECT_TRUE(value.SerializeToString(&serialized_value));
-  EXPECT_CALL(request_stream_info_,
-              setDynamicMetadata(HttpFilters::HttpFilterNames::get().Wasm,
-                                 MapEq(std::map<std::string, std::string>{
-                                     {"wasm_request_set_key", serialized_value}})));
-
+  EXPECT_CALL(encoder_callbacks_, streamInfo()).WillRepeatedly(ReturnRef(request_stream_info_));
   Http::TestHeaderMapImpl request_headers{{":path", "/"}};
   EXPECT_EQ(Http::FilterHeadersStatus::Continue, filter_->decodeHeaders(request_headers, true));
   Buffer::OwnedImpl data("hello");
@@ -348,6 +458,10 @@ TEST_P(WasmHttpFilterTest, Metadata) {
   filter_->onDestroy();
   StreamInfo::MockStreamInfo log_stream_info;
   filter_->log(&request_headers, nullptr, nullptr, log_stream_info);
+
+  const auto& result = request_stream_info_.filterState().getDataReadOnly<Common::Wasm::WasmState>(
+      "wasm_request_set_key");
+  EXPECT_EQ("wasm_request_set_value", result.value());
 }
 
 #endif
@@ -381,7 +495,7 @@ TEST_F(WasmHttpFilterTest, NullVmResolver) {
           HttpFilters::HttpFilterNames::get().Wasm,
           MessageUtil::keyValueStruct("wasm_request_get_key", "wasm_request_get_value")));
   EXPECT_CALL(request_stream_info_, responseCode()).WillRepeatedly(Return(403));
-  EXPECT_CALL(decoder_callbacks_, streamInfo()).WillRepeatedly(ReturnRef(request_stream_info_));
+  EXPECT_CALL(encoder_callbacks_, streamInfo()).WillRepeatedly(ReturnRef(request_stream_info_));
   EXPECT_CALL(*filter_,
               scriptLog_(spdlog::level::debug, Eq(absl::string_view("onRequestHeaders 2"))));
   EXPECT_CALL(*filter_,
@@ -396,6 +510,8 @@ TEST_F(WasmHttpFilterTest, NullVmResolver) {
                                    Eq(absl::string_view("metadata: wasm_request_get_value"))));
   EXPECT_CALL(*filter_,
               scriptLog_(spdlog::level::warn, Eq(absl::string_view("response.code: 403"))));
+  EXPECT_CALL(*filter_,
+              scriptLog_(spdlog::level::warn, Eq(absl::string_view("state: wasm_value"))));
 
   Http::TestHeaderMapImpl request_headers{{":path", "/test_context"}};
   EXPECT_EQ(Http::FilterHeadersStatus::Continue, filter_->decodeHeaders(request_headers, true));

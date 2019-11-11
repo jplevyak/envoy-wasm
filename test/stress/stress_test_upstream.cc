@@ -244,18 +244,21 @@ ServerConnection::ServerConnection(const std::string& name, uint32_t id,
     : name_(name), id_(id), network_connection_(network_connection), dispatcher_(dispatcher),
       request_callback_(request_callback), close_callback_(close_callback) {
   constexpr uint32_t max_request_headers_kb = 2U;
+  constexpr uint32_t max_request_headers_count = 100;
 
   switch (http_type) {
   case Http::CodecClient::Type::HTTP1:
     http_connection_ = std::make_unique<Http::Http1::ServerConnectionImpl>(
-        network_connection, scope, *this, Http::Http1Settings(), max_request_headers_kb);
+        network_connection, scope, *this, Http::Http1Settings(), max_request_headers_kb,
+        max_request_headers_count);
     break;
   case Http::CodecClient::Type::HTTP2: {
     Http::Http2Settings settings;
     settings.allow_connect_ = true;
     settings.allow_metadata_ = true;
     http_connection_ = std::make_unique<Http::Http2::ServerConnectionImpl>(
-        network_connection, *this, scope, settings, max_request_headers_kb);
+        network_connection, *this, scope, settings, max_request_headers_kb,
+        max_request_headers_count);
   } break;
   default:
     ENVOY_LOG(error,
@@ -263,7 +266,8 @@ ServerConnection::ServerConnection(const std::string& name, uint32_t id,
               "defaulting to HTTP1",
               name_, id_, static_cast<int>(http_type) + 1);
     http_connection_ = std::make_unique<Http::Http1::ServerConnectionImpl>(
-        network_connection, scope, *this, Http::Http1Settings(), max_request_headers_kb);
+        network_connection, scope, *this, Http::Http1Settings(), max_request_headers_kb,
+        max_request_headers_count);
     break;
   }
 }
@@ -495,7 +499,7 @@ Server::Server(const std::string& name, Network::Socket& listening_socket,
     : name_(name), stats_(), time_system_(),
       api_(Thread::threadFactoryForTest(), stats_, time_system_, Filesystem::fileSystemForTest()),
       dispatcher_(api_.allocateDispatcher()),
-      connection_handler_(new Envoy::Server::ConnectionHandlerImpl(ENVOY_LOGGER(), *dispatcher_)),
+      connection_handler_(new Envoy::Server::ConnectionHandlerImpl(*dispatcher_, "stress_server")),
       thread_(nullptr), listening_socket_(listening_socket),
       server_filter_chain_(transport_socket_factory), http_type_(http_type) {}
 
@@ -584,6 +588,8 @@ Stats::Scope& Server::listenerScope() { return stats_; }
 uint64_t Server::listenerTag() const { return 0; }
 
 const std::string& Server::name() const { return name_; }
+
+const Network::ActiveUdpListenerFactory* Server::udpListenerFactory() { return nullptr; }
 
 const Network::FilterChain* Server::findFilterChain(const Network::ConnectionSocket&) const {
   return &server_filter_chain_;

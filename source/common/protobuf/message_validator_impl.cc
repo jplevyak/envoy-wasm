@@ -4,7 +4,6 @@
 
 #include "common/common/assert.h"
 #include "common/common/hash.h"
-#include "common/common/logger.h"
 #include "common/common/macros.h"
 
 #include "absl/strings/str_cat.h"
@@ -35,7 +34,8 @@ void WarningValidationVisitorImpl::onUnknownField(absl::string_view description)
 }
 
 void StrictValidationVisitorImpl::onUnknownField(absl::string_view description) {
-  throw EnvoyException(absl::StrCat("Protobuf message (", description, ") has unknown fields"));
+  throw UnknownProtoFieldException(
+      absl::StrCat("Protobuf message (", description, ") has unknown fields"));
 }
 
 ValidationVisitor& getNullValidationVisitor() {

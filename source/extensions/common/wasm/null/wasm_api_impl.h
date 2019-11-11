@@ -19,7 +19,15 @@ namespace Plugin {
 #define WS(_x) Word(static_cast<uint64_t>(_x))
 #define WR(_x) Word(reinterpret_cast<uint64_t>(_x))
 
-inline WasmResult wordToWasmResult(Word w) { return static_cast<WasmResult>(w.u64); }
+inline WasmResult wordToWasmResult(Word w) { return static_cast<WasmResult>(w.u64_); }
+
+inline WasmResult proxy_getStatus(uint32_t* code_ptr, const char** ptr, size_t* size) {
+  return wordToWasmResult(getStatusHandler(current_context_, WR(code_ptr), WR(ptr), WR(size)));
+}
+
+inline WasmResult proxy_getConfiguration(const char** ptr, size_t* size) {
+  return wordToWasmResult(getConfigurationHandler(current_context_, WR(ptr), WR(size)));
+}
 
 // Logging
 inline WasmResult proxy_log(LogLevel level, const char* logMessage, size_t messageSize) {
@@ -34,39 +42,16 @@ inline WasmResult proxy_getCurrentTimeNanoseconds(uint64_t* result) {
   return wordToWasmResult(getCurrentTimeNanosecondsHandler(current_context_, WR(result)));
 }
 
-// Metadata
-inline WasmResult proxy_getMetadata(MetadataType type, const char* key_ptr, size_t key_size,
+// State accessors
+inline WasmResult proxy_getProperty(const char* path_ptr, size_t path_size,
                                     const char** value_ptr_ptr, size_t* value_size_ptr) {
-  return wordToWasmResult(getMetadataHandler(current_context_, WS(type), WR(key_ptr), WS(key_size),
+  return wordToWasmResult(getPropertyHandler(current_context_, WR(path_ptr), WS(path_size),
                                              WR(value_ptr_ptr), WR(value_size_ptr)));
 }
-inline WasmResult proxy_setMetadata(MetadataType type, const char* key_ptr, size_t key_size,
-                                    const char* value_ptr, size_t value_size) {
-  return wordToWasmResult(setMetadataHandler(current_context_, WS(type), WR(key_ptr), WS(key_size),
+inline WasmResult proxy_setProperty(const char* key_ptr, size_t key_size, const char* value_ptr,
+                                    size_t value_size) {
+  return wordToWasmResult(setPropertyHandler(current_context_, WR(key_ptr), WS(key_size),
                                              WR(value_ptr), WS(value_size)));
-}
-inline WasmResult proxy_getMetadataPairs(MetadataType type, const char** value_ptr,
-                                         size_t* value_size) {
-  return wordToWasmResult(
-      getMetadataPairsHandler(current_context_, WS(type), WR(value_ptr), WR(value_size)));
-}
-inline WasmResult proxy_getMetadataStruct(MetadataType type, const char* name_ptr, size_t name_size,
-                                          const char** value_ptr_ptr, size_t* value_size_ptr) {
-  return wordToWasmResult(getMetadataStructHandler(current_context_, WS(type), WR(name_ptr),
-                                                   WS(name_size), WR(value_ptr_ptr),
-                                                   WR(value_size_ptr)));
-}
-inline WasmResult proxy_setMetadataStruct(MetadataType type, const char* name_ptr, size_t name_size,
-                                          const char* value_ptr, size_t value_size) {
-  return wordToWasmResult(setMetadataStructHandler(current_context_, WS(type), WR(name_ptr),
-                                                   WS(name_size), WR(value_ptr), WS(value_size)));
-}
-
-// Generic selector
-inline WasmResult proxy_getSelectorExpression(const char* path_ptr, size_t path_size,
-                                              const char** value_ptr_ptr, size_t* value_size_ptr) {
-  return wordToWasmResult(getSelectorExpressionHandler(
-      current_context_, WR(path_ptr), WS(path_size), WR(value_ptr_ptr), WR(value_size_ptr)));
 }
 
 // Continue
@@ -107,8 +92,8 @@ inline WasmResult proxy_setSharedData(const char* key_ptr, size_t key_size, cons
 
 // SharedQueue
 // Note: Registering the same queue_name will overwrite the old registration while preseving any
-// pending data. Consequently it should typically be followed by a call to proxy_dequeueSharedQueue.
-// Returns unique token for the queue.
+// pending data. Consequently it should typically be followed by a call to
+// proxy_dequeueSharedQueue. Returns unique token for the queue.
 inline WasmResult proxy_registerSharedQueue(const char* queue_name_ptr, size_t queue_name_size,
                                             uint32_t* token) {
   return wordToWasmResult(registerSharedQueueHandler(current_context_, WR(queue_name_ptr),
@@ -132,6 +117,18 @@ inline WasmResult proxy_dequeueSharedQueue(uint32_t token, const char** data_ptr
 inline WasmResult proxy_enqueueSharedQueue(uint32_t token, const char* data_ptr, size_t data_size) {
   return wordToWasmResult(
       enqueueSharedQueueHandler(current_context_, WS(token), WR(data_ptr), WS(data_size)));
+}
+
+// Buffer
+inline WasmResult proxy_getBufferBytes(BufferType type, uint64_t start, uint64_t length,
+                                       const char** ptr, size_t* size) {
+  return wordToWasmResult(
+      getBufferBytesHandler(current_context_, WS(type), WS(start), WS(length), WR(ptr), WR(size)));
+}
+
+inline WasmResult proxy_getBufferStatus(BufferType type, size_t* length_ptr, uint32_t* flags_ptr) {
+  return wordToWasmResult(
+      getBufferStatusHandler(current_context_, WS(type), WR(length_ptr), WR(flags_ptr)));
 }
 
 // Headers/Trailers/Metadata Maps
@@ -166,45 +163,36 @@ inline WasmResult proxy_getHeaderMapSize(HeaderMapType type, size_t* size) {
   return wordToWasmResult(getHeaderMapSizeHandler(current_context_, WS(type), WR(size)));
 }
 
-// Body
-inline WasmResult proxy_getRequestBodyBufferBytes(uint64_t start, uint64_t length, const char** ptr,
-                                                  size_t* size) {
-  return wordToWasmResult(getRequestBodyBufferBytesHandler(current_context_, Word(start),
-                                                           Word(length), WR(ptr), WR(size)));
-}
-inline WasmResult proxy_getResponseBodyBufferBytes(uint64_t start, uint64_t length,
-                                                   const char** ptr, size_t* size) {
-  return wordToWasmResult(getResponseBodyBufferBytesHandler(current_context_, WS(start), WS(length),
-                                                            WR(ptr), WR(size)));
-}
-
 // HTTP
 // Returns token, used in callback onHttpCallResponse
-inline uint64_t proxy_httpCall(const char* uri_ptr, size_t uri_size, void* header_pairs_ptr,
-                               size_t header_pairs_size, const char* body_ptr, size_t body_size,
-                               void* trailer_pairs_ptr, size_t trailer_pairs_size,
-                               uint64_t timeout_milliseconds) {
-  return httpCallHandler(current_context_, WR(uri_ptr), WS(uri_size), WR(header_pairs_ptr),
-                         WS(header_pairs_size), WR(body_ptr), WS(body_size), WR(trailer_pairs_ptr),
-                         WS(trailer_pairs_size), WS(timeout_milliseconds));
+inline WasmResult proxy_httpCall(const char* uri_ptr, size_t uri_size, void* header_pairs_ptr,
+                                 size_t header_pairs_size, const char* body_ptr, size_t body_size,
+                                 void* trailer_pairs_ptr, size_t trailer_pairs_size,
+                                 uint64_t timeout_milliseconds, uint32_t* token_ptr) {
+  return wordToWasmResult(
+      httpCallHandler(current_context_, WR(uri_ptr), WS(uri_size), WR(header_pairs_ptr),
+                      WS(header_pairs_size), WR(body_ptr), WS(body_size), WR(trailer_pairs_ptr),
+                      WS(trailer_pairs_size), WS(timeout_milliseconds), WR(token_ptr)));
 }
 // gRPC
 // Returns token, used in gRPC callbacks (onGrpc...)
-inline uint64_t proxy_grpcCall(const char* service_ptr, size_t service_size,
-                               const char* service_name_ptr, size_t service_name_size,
-                               const char* method_name_ptr, size_t method_name_size,
-                               const char* request_ptr, size_t request_size,
-                               uint64_t timeout_milliseconds) {
-  return grpcCallHandler(current_context_, WR(service_ptr), WS(service_size), WR(service_name_ptr),
-                         WS(service_name_size), WR(method_name_ptr), WS(method_name_size),
-                         WR(request_ptr), WS(request_size), WS(timeout_milliseconds));
-}
-inline uint64_t proxy_grpcStream(const char* service_ptr, size_t service_size,
+inline WasmResult proxy_grpcCall(const char* service_ptr, size_t service_size,
                                  const char* service_name_ptr, size_t service_name_size,
-                                 const char* method_name_ptr, size_t method_name_size) {
-  return grpcStreamHandler(current_context_, WR(service_ptr), WS(service_size),
-                           WR(service_name_ptr), WS(service_name_size), WR(method_name_ptr),
-                           WS(method_name_size));
+                                 const char* method_name_ptr, size_t method_name_size,
+                                 const char* request_ptr, size_t request_size,
+                                 uint64_t timeout_milliseconds, uint32_t* token_ptr) {
+  return wordToWasmResult(
+      grpcCallHandler(current_context_, WR(service_ptr), WS(service_size), WR(service_name_ptr),
+                      WS(service_name_size), WR(method_name_ptr), WS(method_name_size),
+                      WR(request_ptr), WS(request_size), WS(timeout_milliseconds), WR(token_ptr)));
+}
+inline WasmResult proxy_grpcStream(const char* service_ptr, size_t service_size,
+                                   const char* service_name_ptr, size_t service_name_size,
+                                   const char* method_name_ptr, size_t method_name_size,
+                                   uint32_t* token_ptr) {
+  return wordToWasmResult(grpcStreamHandler(
+      current_context_, WR(service_ptr), WS(service_size), WR(service_name_ptr),
+      WS(service_name_size), WR(method_name_ptr), WS(method_name_size), WR(token_ptr)));
 }
 inline WasmResult proxy_grpcCancel(uint64_t token) {
   return wordToWasmResult(grpcCancelHandler(current_context_, WS(token)));
@@ -226,10 +214,10 @@ inline WasmResult proxy_defineMetric(MetricType type, const char* name_ptr, size
       defineMetricHandler(current_context_, WS(type), WR(name_ptr), WS(name_size), WR(metric_id)));
 }
 inline WasmResult proxy_incrementMetric(uint32_t metric_id, int64_t offset) {
-  return wordToWasmResult(incrementMetricHandler(current_context_, WS(metric_id), WS(offset)));
+  return wordToWasmResult(incrementMetricHandler(current_context_, WS(metric_id), offset));
 }
 inline WasmResult proxy_recordMetric(uint32_t metric_id, uint64_t value) {
-  return wordToWasmResult(recordMetricHandler(current_context_, WS(metric_id), WS(value)));
+  return wordToWasmResult(recordMetricHandler(current_context_, WS(metric_id), value));
 }
 inline WasmResult proxy_getMetric(uint32_t metric_id, uint64_t* value) {
   return wordToWasmResult(getMetricHandler(current_context_, WS(metric_id), WR(value)));

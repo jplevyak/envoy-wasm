@@ -11,13 +11,16 @@ namespace Common {
 namespace Wasm {
 namespace Null {
 namespace Plugin {
-using LogLevel = Envoy::Logger::Logger::levels;
+using LogLevel = Envoy::Logger::Logger::Levels;
+using FilterStatus = Network::FilterStatus;
 using FilterHeadersStatus = Http::FilterHeadersStatus;
 using FilterMetadataStatus = Http::FilterMetadataStatus;
 using FilterTrailersStatus = Http::FilterTrailersStatus;
 using FilterDataStatus = Http::FilterDataStatus;
 using GrpcStatus = Envoy::Grpc::Status::GrpcStatus;
 using MetricType = Envoy::Extensions::Common::Wasm::Context::MetricType;
+using PeerType = Envoy::Extensions::Common::Wasm::Context::PeerType;
+using WasmResult = Envoy::Extensions::Common::Wasm::WasmResult;
 using StringView = absl::string_view;
 template <typename T> using Optional = absl::optional<T>;
 } // namespace Plugin
@@ -57,41 +60,42 @@ public:
   explicit NullPlugin(NullPluginRootRegistry* registry) : registry_(registry) {}
   NullPlugin(const NullPlugin& other) : registry_(other.registry_) {}
 
-  void start() override {}
-
 #define _DECLARE_OVERRIDE(_t) void getFunction(absl::string_view function_name, _t* f) override;
   FOR_ALL_WASM_VM_EXPORTS(_DECLARE_OVERRIDE)
 #undef _DECLARE_OVERRIDE
 
-  void onStart(uint64_t root_context_id, uint64_t root_id_ptr, uint64_t root_id_size,
-               uint64_t vm_configuration_ptr, uint64_t vm_configuration_size);
-  void onConfigure(uint64_t root_context_id, uint64_t ptr, uint64_t size);
+  bool validateConfiguration(uint64_t root_context_id, uint64_t plugin_configuration_size);
+  bool onStart(uint64_t root_context_id, uint64_t vm_configuration_size);
+  bool onConfigure(uint64_t root_context_id, uint64_t plugin_configuration_size);
   void onTick(uint64_t root_context_id);
   void onQueueReady(uint64_t root_context_id, uint64_t token);
 
   void onCreate(uint64_t context_id, uint64_t root_context_id);
 
-  uint64_t onRequestHeaders(uint64_t context_id);
+  uint64_t onNewConnection(uint64_t context_id);
+  uint64_t onDownstreamData(uint64_t context_id, uint64_t data_length, uint64_t end_of_stream);
+  uint64_t onUpstreamData(uint64_t context_id, uint64_t data_length, uint64_t end_of_stream);
+  void onDownstreamConnectionClose(uint64_t context_id, uint64_t peer_type);
+  void onUpstreamConnectionClose(uint64_t context_id, uint64_t peer_type);
+
+  uint64_t onRequestHeaders(uint64_t context_id, uint64_t headers);
   uint64_t onRequestBody(uint64_t context_id, uint64_t body_buffer_length, uint64_t end_of_stream);
-  uint64_t onRequestTrailers(uint64_t context_id);
-  uint64_t onRequestMetadata(uint64_t context_id);
+  uint64_t onRequestTrailers(uint64_t context_id, uint64_t trailers);
+  uint64_t onRequestMetadata(uint64_t context_id, uint64_t elements);
 
-  uint64_t onResponseHeaders(uint64_t context_id);
+  uint64_t onResponseHeaders(uint64_t context_id, uint64_t headers);
   uint64_t onResponseBody(uint64_t context_id, uint64_t body_buffer_length, uint64_t end_of_stream);
-  uint64_t onResponseTrailers(uint64_t context_id);
-  uint64_t onResponseMetadata(uint64_t context_id);
+  uint64_t onResponseTrailers(uint64_t context_id, uint64_t trailers);
+  uint64_t onResponseMetadata(uint64_t context_id, uint64_t elements);
 
-  void onHttpCallResponse(uint64_t context_id, uint64_t token, uint64_t header_pairs_ptr,
-                          uint64_t header_pairs_size, uint64_t body_ptr, uint64_t body_size,
-                          uint64_t trailer_pairs_ptr, uint64_t trailer_pairs_size);
+  void onHttpCallResponse(uint64_t context_id, uint64_t token, uint64_t headers, uint64_t body_size,
+                          uint64_t trailers);
 
-  void onGrpcReceive(uint64_t context_id, uint64_t token, uint64_t response_ptr,
-                     uint64_t response_size);
-  void onGrpcClose(uint64_t context_id, uint64_t token, uint64_t status_code,
-                   uint64_t status_message_ptr, uint64_t status_message_size);
-  void onGrpcCreateInitialMetadata(uint64_t context_id, uint64_t token);
-  void onGrpcReceiveInitialMetadata(uint64_t context_id, uint64_t token);
-  void onGrpcReceiveTrailingMetadata(uint64_t context_id, uint64_t token);
+  void onGrpcReceive(uint64_t context_id, uint64_t token, size_t body_size);
+  void onGrpcClose(uint64_t context_id, uint64_t token, uint64_t status_code);
+  void onGrpcCreateInitialMetadata(uint64_t context_id, uint64_t token, uint64_t headers);
+  void onGrpcReceiveInitialMetadata(uint64_t context_id, uint64_t token, uint64_t headers);
+  void onGrpcReceiveTrailingMetadata(uint64_t context_id, uint64_t token, uint64_t trailers);
 
   void onLog(uint64_t context_id);
   void onDone(uint64_t context_id);
@@ -101,8 +105,7 @@ public:
 
 private:
   Plugin::Context* ensureContext(uint64_t context_id, uint64_t root_context_id);
-  Plugin::RootContext* ensureRootContext(uint64_t context_id,
-                                         std::unique_ptr<Plugin::WasmData> root_id);
+  Plugin::RootContext* ensureRootContext(uint64_t context_id);
   Plugin::Context* getContext(uint64_t context_id);
   Plugin::RootContext* getRootContext(uint64_t context_id);
   Plugin::ContextBase* getContextBase(uint64_t context_id);
