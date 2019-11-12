@@ -163,6 +163,7 @@ REPOSITORY_LOCATIONS = dict(
         # 2019-04-14 development branch
         urls = ["https://github.com/madler/zlib/archive/79baebe50e4d6b73ae1f8b603f0ef41300110aa3.tar.gz"],
     ),
+    # https://storage.googleapis.com/webassembly/emscripten-releases-builds/linux/c630da9163a64e08de3dd948be0a0f7a175d285b/wasm-binaries.tbz2
     com_github_kripken_emscripten_toolchain = dict(
         sha256 = "2fb0e48b41cb79fab138a278a41241d0f65399c72e364e9da04ed24dc195a74e",
         strip_prefix = "emscripten-1.38.39",

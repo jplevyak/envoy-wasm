@@ -388,6 +388,7 @@ def _com_google_protobuf_emscripten():
     native.bind(
         name = "emscripten_python_headers",
         actual = "@com_google_protobuf_emscripten//util/python:python_headers",
+    )
 
 def _com_google_cel_cpp():
     _repository_impl("com_google_cel_cpp")
