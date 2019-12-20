@@ -12,6 +12,7 @@
 #include "absl/strings/str_replace.h"
 #include "openssl/err.h"
 #include "openssl/x509v3.h"
+#include "openssl/ssl/internal.h"
 
 using Envoy::Network::PostIoAction;
 
@@ -58,11 +59,35 @@ SslSocket::SslSocket(Envoy::Ssl::ContextSharedPtr ctx, InitialState state,
   }
 }
 
+static setupKTLS(SSL* ssl_ptr, int fd) {
+  struct tls12_crypto_info_aes_gcm_128 ci = {0};
+
+  uint64_t read_sequence = SSL_get_read_sequence(ssl);
+  uint64_t read_sequence = SSL_get_write_sequence(ssl);
+  ssl_st* ssl = static_cast<ssl_st*>(ssl_ptr);
+  uint64_t raw_read_sequence = 0;
+  memcpy(&raw_read_sequence, ssl->s3->read_sequence, sizeof(uint64_t));
+  uint64_t raw_write_sequence = 0;
+  memcpy(&raw_write_sequence, ssl->s3->write_sequence, sizeof(uint64_t));
+
+  ci.info.version = TLS_1_2_VERSION;
+  ci.info.cipher_type = TLS_CIPHER_AES_GCM_128;
+  memcpy(ci.rec_seq, seq, TLS_CIPHER_AES_GCM_128_REC_SEQ_SIZE);
+  memcpy(ci.key, ctx->gcm.key, TLS_CIPHER_AES_GCM_128_KEY_SIZE);
+  memcpy(ci.salt, ctx->iv, TLS_CIPHER_AES_GCM_128_SALT_SIZE);
+  memcpy(ci.iv, ctx->iv + TLS_CIPHER_AES_GCM_128_SALT_SIZE, TLS_CIPHER_AES_GCM_128_IV_SIZE);
+
+  if (setsockopt(fd, SOL_TLS, optname, &ci, sizeof(ci))) {
+    error(1, errno, "setsockopt tls %cx", is_tx ? 't' : 'r');
+  }
+}
+
 void SslSocket::enableFastPath(int fd) {
   fast_path_fd_ = fd;
   last_fast_path_activity_ = callbacks_->connection().dispatcher().timeSource().monotonicTime();
   fast_path_read_buffer_.alloc(FastPathBufferSize);
   fast_path_write_buffer_.alloc(FastPathBufferSize);
+  setupKTLS(ssl_, fd);
   doReadFastPath();
   doWriteFastPath();
 }
