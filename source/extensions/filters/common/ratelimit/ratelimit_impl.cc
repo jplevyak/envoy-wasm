@@ -5,7 +5,9 @@
 #include <string>
 #include <vector>
 
+#include "envoy/api/v2/core/grpc_service.pb.h"
 #include "envoy/api/v2/ratelimit/ratelimit.pb.h"
+#include "envoy/service/ratelimit/v2/rls.pb.h"
 #include "envoy/stats/scope.h"
 
 #include "common/common/assert.h"
@@ -94,7 +96,7 @@ void GrpcClientImpl::onSuccess(
 
 void GrpcClientImpl::onFailure(Grpc::Status::GrpcStatus status, const std::string&,
                                Tracing::Span&) {
-  ASSERT(status != Grpc::Status::GrpcStatus::Ok);
+  ASSERT(status != Grpc::Status::WellKnownGrpcStatus::Ok);
   callbacks_->complete(LimitStatus::Error, nullptr, nullptr);
   callbacks_ = nullptr;
 }

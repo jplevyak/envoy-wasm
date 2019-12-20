@@ -1,5 +1,7 @@
 #include "extensions/filters/http/grpc_stats/grpc_stats_filter.h"
 
+#include "envoy/config/filter/http/grpc_stats/v2alpha/config.pb.h"
+#include "envoy/config/filter/http/grpc_stats/v2alpha/config.pb.validate.h"
 #include "envoy/registry/registry.h"
 
 #include "common/grpc/codec.h"
@@ -32,7 +34,7 @@ public:
   }
   Http::FilterDataStatus decodeData(Buffer::Instance& data, bool) override {
     if (grpc_request_) {
-      uint64_t delta = request_counter_.decode(data);
+      uint64_t delta = request_counter_.inspect(data);
       if (delta > 0) {
         maybeWriteFilterState();
         if (doStatTracking()) {
@@ -52,7 +54,7 @@ public:
   }
   Http::FilterDataStatus encodeData(Buffer::Instance& data, bool) override {
     if (grpc_response_) {
-      uint64_t delta = response_counter_.decode(data);
+      uint64_t delta = response_counter_.inspect(data);
       if (delta > 0) {
         maybeWriteFilterState();
         if (doStatTracking()) {
@@ -81,7 +83,8 @@ public:
       filter_object_ = state.get();
       decoder_callbacks_->streamInfo().filterState().setData(
           HttpFilterNames::get().GrpcStats, std::move(state),
-          StreamInfo::FilterState::StateType::Mutable);
+          StreamInfo::FilterState::StateType::Mutable,
+          StreamInfo::FilterState::LifeSpan::FilterChain);
     }
     filter_object_->request_message_count = request_counter_.frameCount();
     filter_object_->response_message_count = response_counter_.frameCount();

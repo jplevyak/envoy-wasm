@@ -5,6 +5,7 @@
 #include "envoy/http/filter.h"
 #include "envoy/router/rds.h"
 #include "envoy/stats/scope.h"
+#include "envoy/type/percent.pb.h"
 
 #include "common/http/date_provider.h"
 #include "common/network/utility.h"
@@ -107,7 +108,7 @@ struct ConnectionManagerTracingStats {
  */
 struct TracingConnectionManagerConfig {
   Tracing::OperationName operation_name_;
-  std::vector<Http::LowerCaseString> request_headers_for_tags_;
+  Tracing::CustomTagMap custom_tags_;
   envoy::type::FractionalPercent client_sampling_;
   envoy::type::FractionalPercent random_sampling_;
   envoy::type::FractionalPercent overall_sampling_;
@@ -231,6 +232,12 @@ public:
    * @return optional idle timeout for incoming connection manager connections.
    */
   virtual absl::optional<std::chrono::milliseconds> idleTimeout() const PURE;
+
+  /**
+   * @return if the connection manager does routing base on router config, e.g. a Server::Admin impl
+   * has no route config.
+   */
+  virtual bool isRoutable() const PURE;
 
   /**
    * @return optional maximum connection duration timeout for manager connections.

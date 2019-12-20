@@ -3,8 +3,14 @@
 #include <memory>
 #include <string>
 
+#include "envoy/api/v2/auth/cert.pb.h"
+#include "envoy/api/v2/core/address.pb.h"
+#include "envoy/api/v2/core/base.pb.h"
+#include "envoy/config/bootstrap/v2/bootstrap.pb.h"
+#include "envoy/config/filter/network/http_connection_manager/v2/http_connection_manager.pb.h"
 #include "envoy/config/transport_socket/tap/v2alpha/tap.pb.h"
 #include "envoy/data/tap/v2alpha/wrapper.pb.h"
+#include "envoy/service/tap/v2alpha/common.pb.h"
 
 #include "common/event/dispatcher_impl.h"
 #include "common/network/connection_impl.h"
@@ -148,8 +154,8 @@ TEST_P(SslIntegrationTest, RouterDownstreamDisconnectBeforeRequestComplete) {
 }
 
 TEST_P(SslIntegrationTest, RouterDownstreamDisconnectBeforeResponseComplete) {
-#ifdef __APPLE__
-  // Skip this test on macOS: we can't detect the early close on macOS, and we
+#if defined(__APPLE__) || defined(WIN32)
+  // Skip this test on OS X + Windows: we can't detect the early close on non-Linux, and we
   // won't clean up the upstream connection until it times out. See #4294.
   if (downstream_protocol_ == Http::CodecClient::Type::HTTP1) {
     return;

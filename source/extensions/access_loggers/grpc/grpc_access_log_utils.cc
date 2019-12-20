@@ -1,5 +1,7 @@
 #include "extensions/access_loggers/grpc/grpc_access_log_utils.h"
 
+#include "envoy/config/accesslog/v2/als.pb.h"
+#include "envoy/data/accesslog/v2/accesslog.pb.h"
 #include "envoy/upstream/upstream.h"
 
 #include "common/network/utility.h"
@@ -119,7 +121,8 @@ void Utility::responseFlagsToAccessLogResponseFlags(
 
 void Utility::extractCommonAccessLogProperties(
     envoy::data::accesslog::v2::AccessLogCommon& common_access_log,
-    const StreamInfo::StreamInfo& stream_info) {
+    const StreamInfo::StreamInfo& stream_info,
+    const envoy::config::accesslog::v2::CommonGrpcAccessLogConfig& config) {
   // TODO(mattklein123): Populate sample_rate field.
   if (stream_info.downstreamRemoteAddress() != nullptr) {
     Network::Utility::addressToProtobufAddress(
@@ -234,6 +237,23 @@ void Utility::extractCommonAccessLogProperties(
   }
   if (stream_info.dynamicMetadata().filter_metadata_size() > 0) {
     common_access_log.mutable_metadata()->MergeFrom(stream_info.dynamicMetadata());
+  }
+
+  for (const auto& key : config.filter_state_objects_to_log()) {
+    if (stream_info.filterState().hasDataWithName(key)) {
+      const auto& obj =
+          stream_info.filterState().getDataReadOnly<StreamInfo::FilterState::Object>(key);
+      ProtobufTypes::MessagePtr serialized_proto = obj.serializeAsProto();
+      if (serialized_proto != nullptr) {
+        auto& filter_state_objects = *common_access_log.mutable_filter_state_objects();
+        ProtobufWkt::Any& any = filter_state_objects[key];
+        if (dynamic_cast<ProtobufWkt::Any*>(serialized_proto.get()) != nullptr) {
+          any.Swap(dynamic_cast<ProtobufWkt::Any*>(serialized_proto.get()));
+        } else {
+          any.PackFrom(*serialized_proto);
+        }
+      }
+    }
   }
 }
 

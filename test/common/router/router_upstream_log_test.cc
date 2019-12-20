@@ -1,6 +1,10 @@
 #include <ctime>
 #include <regex>
 
+#include "envoy/api/v2/core/base.pb.h"
+#include "envoy/config/filter/accesslog/v2/accesslog.pb.h"
+#include "envoy/config/filter/http/router/v2/router.pb.h"
+
 #include "common/network/utility.h"
 #include "common/router/router.h"
 #include "common/upstream/upstream_impl.h"
@@ -142,7 +146,7 @@ public:
     EXPECT_CALL(*router_->retry_state_, shouldRetryHeaders(_, _)).WillOnce(Return(RetryStatus::No));
 
     Http::HeaderMapPtr response_headers(new Http::TestHeaderMapImpl(response_headers_init));
-    response_headers->insertStatus().value(response_code);
+    response_headers->setStatus(response_code);
 
     EXPECT_CALL(context_.cluster_manager_.conn_pool_.host_->outlier_detector_,
                 putHttpResponseCode(response_code));
@@ -177,7 +181,7 @@ public:
 
     router_->retry_state_->expectResetRetry();
     EXPECT_CALL(context_.cluster_manager_.conn_pool_.host_->outlier_detector_,
-                putResult(Upstream::Outlier::Result::LOCAL_ORIGIN_TIMEOUT, _));
+                putResult(Upstream::Outlier::Result::LocalOriginTimeout, _));
     per_try_timeout_->invokeCallback();
 
     // We expect this reset to kick off a new request.
@@ -188,7 +192,7 @@ public:
                 Http::ConnectionPool::Callbacks& callbacks) -> Http::ConnectionPool::Cancellable* {
               response_decoder = &decoder;
               EXPECT_CALL(context_.cluster_manager_.conn_pool_.host_->outlier_detector_,
-                          putResult(Upstream::Outlier::Result::LOCAL_ORIGIN_CONNECT_SUCCESS, _));
+                          putResult(Upstream::Outlier::Result::LocalOriginConnectSuccess, _));
               callbacks.onPoolReady(encoder2, context_.cluster_manager_.conn_pool_.host_,
                                     stream_info_);
               return nullptr;

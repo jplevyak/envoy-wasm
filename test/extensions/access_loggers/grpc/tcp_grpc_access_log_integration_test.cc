@@ -1,5 +1,7 @@
+#include "envoy/api/v2/core/address.pb.h"
 #include "envoy/config/accesslog/v2/als.pb.h"
-#include "envoy/config/filter/network/tcp_proxy/v2/tcp_proxy.pb.validate.h"
+#include "envoy/config/bootstrap/v2/bootstrap.pb.h"
+#include "envoy/config/filter/network/tcp_proxy/v2/tcp_proxy.pb.h"
 #include "envoy/service/accesslog/v2/als.pb.h"
 
 #include "common/buffer/zero_copy_input_stream_impl.h"
@@ -143,6 +145,8 @@ TEST_P(TcpGrpcAccessLogIntegrationTest, BasicAccessLogFlow) {
   ASSERT_TRUE(fake_upstream_connection->write("", true));
   tcp_client->waitForHalfClose();
   tcp_client->write("", true);
+
+  ASSERT_TRUE(fake_upstream_connection->waitForData(3));
   ASSERT_TRUE(fake_upstream_connection->waitForHalfClose());
   ASSERT_TRUE(fake_upstream_connection->waitForDisconnect());
 

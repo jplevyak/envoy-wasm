@@ -1,6 +1,8 @@
 #include <iostream>
 #include <unordered_map>
 
+#include "envoy/api/v2/lds.pb.h"
+#include "envoy/api/v2/listener/listener.pb.h"
 #include "envoy/network/connection.h"
 #include "envoy/network/listen_socket.h"
 #include "envoy/protobuf/message_validator.h"
@@ -81,6 +83,7 @@ public:
 
   // Dummy method
   void close() override {}
+  bool isOpen() const override { return false; }
   Network::Address::SocketType socketType() const override {
     return Network::Address::SocketType::Stream;
   }
