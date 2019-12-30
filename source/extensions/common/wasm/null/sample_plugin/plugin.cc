@@ -25,7 +25,21 @@ public:
   void onTick() override;
 };
 
+int xDoNotRemove = 0;
+
 void PluginRootContext::onTick() {
+#if 0
+  uint64_t t;
+  if (WasmResult::Ok != proxy_get_current_time_nanoseconds(&t)) {
+    logError("bad result from getCurrentTimeNanoseconds");
+  }
+#endif
+#if 0
+  std::string s = "foo";
+  s += "bar";
+  xDoNotRemove = s.size();
+#endif
+#if 0
   std::string property = "plugin_name";
   const char* value_ptr = nullptr;
   size_t value_size = 0;
@@ -36,11 +50,20 @@ void PluginRootContext::onTick() {
   if (value_size != 107) {
     logError("bad size");
   }
+#endif
+#if 1
+  const char* value_ptr = "foo";
+  size_t value_size = 3;
+#endif
+#if 1
   envoy::api::v2::core::GrpcService grpc_service;
   grpc_service.mutable_envoy_grpc()->set_cluster_name(std::string(value_ptr, value_size));
   std::string grpc_service_string;
   grpc_service.SerializeToString(&grpc_service_string);
+#endif
+#if 0
   ::free(const_cast<char*>(value_ptr));
+#endif
 }
 
 class PluginContext : public Context {
