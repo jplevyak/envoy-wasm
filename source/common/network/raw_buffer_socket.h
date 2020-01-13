@@ -1,6 +1,7 @@
 #pragma once
 
 #include "envoy/buffer/buffer.h"
+#include "envoy/config/filter/network/tcp_proxy/v2/tcp_proxy.pb.h"
 #include "envoy/network/connection.h"
 #include "envoy/network/transport_socket.h"
 
@@ -22,11 +23,16 @@ public:
   IoResult doWrite(Buffer::Instance& buffer, bool end_stream) override;
   Ssl::ConnectionInfoConstSharedPtr ssl() const override { return nullptr; }
 
-  void enableFastPath(TransportSocket* socket) { fast_path_socket_ = socket; }
+  void enableFastPath(TransportSocket* socket,
+                      envoy::config::filter::network::tcp_proxy::v2::FastPathType fast_path_type) {
+    fast_path_socket_ = socket;
+    fast_path_type_ = fast_path_type;
+  }
 
 private:
   TransportSocketCallbacks* callbacks_{};
   TransportSocket* fast_path_socket_{};
+  envoy::config::filter::network::tcp_proxy::v2::FastPathType fast_path_type_;
   bool shutdown_{};
 };
 

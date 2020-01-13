@@ -22,7 +22,20 @@ option java_multiple_files = true;
 // TCP Proxy :ref:`configuration overview <config_network_filters_tcp_proxy>`.
 // [#extension: envoy.filters.network.tcp_proxy]
 
-// [#next-free-field: 12]
+enum FastPathType {
+  None = 0;
+
+  SslSocketCopy = 1;
+  // TLS <- copy -> raw socket.
+
+  KtlsSocketCopy = 2;
+  // kTLS <- copy -> raw socket.
+
+  KtlsSplice = 3;
+  // kTLS <-> splice.
+}
+
+// [#next-free-field: 13]
 message TcpProxy {
   option (udpa.annotations.versioning).previous_message_type =
       "envoy.config.filter.network.tcp_proxy.v2.TcpProxy";
@@ -117,4 +130,7 @@ message TcpProxy {
   // load balancing algorithms will select a host randomly. Currently the number of hash policies is
   // limited to 1.
   repeated type.v3alpha.HashPolicy hash_policy = 11 [(validate.rules).repeated = {max_items: 1}];
+
+  // Fast path.
+  FastPathType fast_path = 12;
 }

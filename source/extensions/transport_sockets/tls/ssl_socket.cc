@@ -1,5 +1,7 @@
 #include "extensions/transport_sockets/tls/ssl_socket.h"
 
+#include <linux/tls.h>
+
 #include "envoy/stats/scope.h"
 
 #include "common/common/assert.h"
@@ -11,8 +13,10 @@
 
 #include "absl/strings/str_replace.h"
 #include "openssl/err.h"
+#include "openssl/ssl.h"
+#include "openssl/aes.h"
+#include "openssl/modes.h"
 #include "openssl/x509v3.h"
-#include "openssl/ssl/internal.h"
 
 using Envoy::Network::PostIoAction;
 
@@ -22,6 +26,8 @@ namespace TransportSockets {
 namespace Tls {
 
 namespace {
+
+using envoy::config::filter::network::tcp_proxy::v2::FastPathType;
 
 constexpr absl::string_view NotReadyReason{"TLS error: Secret is not supplied by SDS"};
 constexpr int FastPathBufferSize = 16384;
@@ -59,35 +65,80 @@ SslSocket::SslSocket(Envoy::Ssl::ContextSharedPtr ctx, InitialState state,
   }
 }
 
-static setupKTLS(SSL* ssl_ptr, int fd) {
-  struct tls12_crypto_info_aes_gcm_128 ci = {0};
+struct boringssl_aesgcm128_keyblock {
+  unsigned char key_rx[TLS_CIPHER_AES_GCM_128_KEY_SIZE];
+  unsigned char key_tx[TLS_CIPHER_AES_GCM_128_KEY_SIZE];
+  unsigned char salt_rx[TLS_CIPHER_AES_GCM_128_SALT_SIZE];
+  unsigned char salt_tx[TLS_CIPHER_AES_GCM_128_SALT_SIZE];
+} __attribute__((packed));
 
-  uint64_t read_sequence = SSL_get_read_sequence(ssl);
-  uint64_t read_sequence = SSL_get_write_sequence(ssl);
-  ssl_st* ssl = static_cast<ssl_st*>(ssl_ptr);
-  uint64_t raw_read_sequence = 0;
-  memcpy(&raw_read_sequence, ssl->s3->read_sequence, sizeof(uint64_t));
-  uint64_t raw_write_sequence = 0;
-  memcpy(&raw_write_sequence, ssl->s3->write_sequence, sizeof(uint64_t));
+void SslSocket::setupKTLS(int fd, bool is_tx) {
+  struct tls12_crypto_info_aes_gcm_128 ci;
+  struct boringssl_aesgcm128_keyblock kb;
+  unsigned char *key, *salt;
+  const SSL_CIPHER* cipher;
+  uint64_t seq;
+  int optname;
+
+  memset(&ci, 0, sizeof(ci));
+
+  cipher = SSL_get_current_cipher(ssl_);
+  if (!cipher)
+    ENVOY_LOG(error, "error at SSL_get_current_cipher");
+  if (SSL_CIPHER_get_cipher_nid(cipher) != NID_aes_128_gcm)
+    ENVOY_LOG(error, "unexpected cipher");
+  if (SSL_get_key_block_len(ssl_) != sizeof(kb))
+    ENVOY_LOG(error, "unexpected keyblock length");
+  if (SSL_generate_key_block(ssl_, reinterpret_cast<uint8_t*>(&kb), sizeof(kb)) != 1)
+    ENVOY_LOG(error, "error at generate keyblock");
+
+  if (is_tx) {
+    seq = SSL_get_write_sequence(ssl_);
+    key = kb.key_tx;
+    salt = kb.salt_tx;
+    optname = TLS_TX;
+  } else {
+    seq = SSL_get_read_sequence(ssl_);
+    key = kb.key_rx;
+    salt = kb.salt_rx;
+#ifndef TLS_RX
+#define TLS_RX 2
+#endif
+    optname = TLS_RX;
+  }
+
+  seq = bswap_64(seq);
 
   ci.info.version = TLS_1_2_VERSION;
   ci.info.cipher_type = TLS_CIPHER_AES_GCM_128;
-  memcpy(ci.rec_seq, seq, TLS_CIPHER_AES_GCM_128_REC_SEQ_SIZE);
-  memcpy(ci.key, ctx->gcm.key, TLS_CIPHER_AES_GCM_128_KEY_SIZE);
-  memcpy(ci.salt, ctx->iv, TLS_CIPHER_AES_GCM_128_SALT_SIZE);
+
+  memcpy(ci.rec_seq, &seq, TLS_CIPHER_AES_GCM_128_REC_SEQ_SIZE);
+  memcpy(ci.key, key, TLS_CIPHER_AES_GCM_128_KEY_SIZE);
+  memcpy(ci.salt, salt, TLS_CIPHER_AES_GCM_128_SALT_SIZE);
+
+#if 0
   memcpy(ci.iv, ctx->iv + TLS_CIPHER_AES_GCM_128_SALT_SIZE, TLS_CIPHER_AES_GCM_128_IV_SIZE);
+#else
+  // Explicit portion of the nonce. Can be anything.
+  *(reinterpret_cast<uint64_t*>(ci.iv)) = bswap_64(0xDEADBEEF);
+#endif
 
   if (setsockopt(fd, SOL_TLS, optname, &ci, sizeof(ci))) {
-    error(1, errno, "setsockopt tls %cx", is_tx ? 't' : 'r');
+    ENVOY_LOG(error, "setsockopt tls error");
   }
 }
 
-void SslSocket::enableFastPath(int fd) {
+void SslSocket::enableFastPath(int fd, FastPathType fast_path_type) {
   fast_path_fd_ = fd;
+  fast_path_type_ = fast_path_type;
   last_fast_path_activity_ = callbacks_->connection().dispatcher().timeSource().monotonicTime();
   fast_path_read_buffer_.alloc(FastPathBufferSize);
   fast_path_write_buffer_.alloc(FastPathBufferSize);
-  setupKTLS(ssl_, fd);
+  if (fast_path_type_ == FastPathType::KtlsSocketCopy ||
+      fast_path_type_ == FastPathType::KtlsSplice) {
+    setupKTLS(callbacks_->ioHandle().fd(), false);
+    setupKTLS(callbacks_->ioHandle().fd(), true);
+  }
   doReadFastPath();
   doWriteFastPath();
 }
@@ -172,51 +223,76 @@ bool SslSocket::doReadFastPath() {
   }
   bool activity = false;
   auto& buffer = fast_path_read_buffer_;
-  while (true) {
-    // Try to read.
-    int size = circularSub(buffer.end_, buffer.start_);
-    if (size < FastPathBufferSize - 1) {
-      int space = 0;
-      if (buffer.end_ >= buffer.start_) {
-        space = FastPathBufferSize - buffer.end_;
-        if (buffer.start_ == 0) {
-          space -= 1;
-        }
-      } else {
-        space = buffer.end_ - buffer.start_ - 1;
-      }
-      int rc = SSL_read(ssl_, &buffer.data_[buffer.end_], space);
-      ENVOY_CONN_LOG(trace, "ssl read returns: {}", callbacks_->connection(), rc);
-      if (rc > 0) {
-        activity = true;
-        buffer.end_ = circularAdd(buffer.end_, rc);
-      } else {
-        if (SSL_get_error(ssl_, rc) != SSL_ERROR_WANT_READ) {
-          buffer.eos_ = true;
-        }
+  if (fast_path_type_ == FastPathType::KtlsSplice) {
+    auto n = ::splice(callbacks_->ioHandle().fd(), nullptr, fast_path_fd_, nullptr, INT32_MAX,
+                      SPLICE_F_MOVE | SPLICE_F_MORE | SPLICE_F_NONBLOCK);
+    if (n > 0) {
+      activity = true;
+    } else {
+      if (errno != EAGAIN) {
+        buffer.eos_ = true;
       }
     }
-    // Try to write.
-    size = circularSub(buffer.end_, buffer.start_);
-    if (size > 0) {
-      struct iovec iov[2];
-      int n = buffer.writeIov(iov);
-      ssize_t result = ::writev(fast_path_fd_, iov, n);
-      if (result > 0) {
-        buffer.start_ = circularAdd(buffer.start_, result);
-        activity = true;
-      } else {
-        if (errno != EAGAIN) {
-          buffer.eos_ = true;
+  } else {
+    while (true) {
+      // Try to read.
+      int size = circularSub(buffer.end_, buffer.start_);
+      if (size < FastPathBufferSize - 1) {
+        if (fast_path_type_ == FastPathType::KtlsSocketCopy) {
+          struct iovec iov[2];
+          int n = buffer.readIov(iov);
+          ssize_t result = ::readv(callbacks_->ioHandle().fd(), iov, n);
+          if (result > 0) {
+            buffer.end_ = circularAdd(buffer.end_, result);
+            activity = true;
+            continue;
+          } else if (errno != EAGAIN) {
+            buffer.eos_ = true;
+          }
+        } else {
+          int space = 0;
+          if (buffer.end_ >= buffer.start_) {
+            space = FastPathBufferSize - buffer.end_;
+            if (buffer.start_ == 0) {
+              space -= 1;
+            }
+          } else {
+            space = buffer.end_ - buffer.start_ - 1;
+          }
+          int rc = SSL_read(ssl_, &buffer.data_[buffer.end_], space);
+          ENVOY_CONN_LOG(trace, "ssl read returns: {}", callbacks_->connection(), rc);
+          if (rc > 0) {
+            activity = true;
+            buffer.end_ = circularAdd(buffer.end_, rc);
+          } else {
+            if (SSL_get_error(ssl_, rc) != SSL_ERROR_WANT_READ) {
+              buffer.eos_ = true;
+            }
+          }
         }
-        // Error or could not write, exit loop.
+      }
+      // Try to write.
+      size = circularSub(buffer.end_, buffer.start_);
+      if (size > 0) {
+        struct iovec iov[2];
+        int n = buffer.writeIov(iov);
+        ssize_t result = ::writev(fast_path_fd_, iov, n);
+        if (result > 0) {
+          buffer.start_ = circularAdd(buffer.start_, result);
+          activity = true;
+        } else {
+          if (errno != EAGAIN) {
+            buffer.eos_ = true;
+          }
+          // Error or could not write, exit loop.
+          break;
+        }
+      } else {
+        // Could not read, exit loop.
+        buffer.start_ = 0;
+        buffer.end_ = 0;
         break;
       }
-    } else {
-      // Could not read, exit loop.
-      buffer.start_ = 0;
-      buffer.end_ = 0;
-      break;
     }
   }
   if (activity) {
@@ -232,41 +308,69 @@ bool SslSocket::doWriteFastPath() {
   }
   bool activity = false;
   auto& buffer = fast_path_write_buffer_;
-  while (true) {
-    // Try to read.
-    int size = circularSub(buffer.end_, buffer.start_);
-    if (size < FastPathBufferSize - 1) {
-      struct iovec iov[2];
-      int n = buffer.readIov(iov);
-      ssize_t result = ::readv(fast_path_fd_, iov, n);
-      if (result > 0) {
-        buffer.end_ = circularAdd(buffer.end_, result);
-        activity = true;
-        continue;
-      } else if (errno != EAGAIN) {
-        buffer.eos_ = true;
-      }
-    }
-    // Try to write.
-    size = circularSub(buffer.end_, buffer.start_);
-    if (!size) {
-      // Could not read and buffer is tempty, exit loop.
-      break;
-    }
-    int towrite = buffer.end_ > buffer.start_ ? buffer.end_ - buffer.start_
-                                              : FastPathBufferSize - buffer.start_;
-    int rc = SSL_write(ssl_, &buffer.data_[buffer.start_], towrite);
-    ENVOY_CONN_LOG(trace, "ssl write returns: {}", callbacks_->connection(), rc);
-    if (rc > 0) {
+  if (fast_path_type_ == FastPathType::KtlsSplice) {
+    auto n = ::splice(fast_path_fd_, nullptr, callbacks_->ioHandle().fd(), nullptr, INT32_MAX,
+                      SPLICE_F_MOVE | SPLICE_F_MORE | SPLICE_F_NONBLOCK);
+    if (n > 0) {
       activity = true;
-      buffer.start_ = circularAdd(buffer.start_, rc);
     } else {
-      int err = SSL_get_error(ssl_, rc);
-      if (err != SSL_ERROR_WANT_WRITE) {
+      if (errno != EAGAIN) {
         buffer.eos_ = true;
       }
-      // Cannot write, exit loop.
-      break;
+    }
+  } else {
+    while (true) {
+      // Try to read.
+      int size = circularSub(buffer.end_, buffer.start_);
+      if (size < FastPathBufferSize - 1) {
+        struct iovec iov[2];
+        int n = buffer.readIov(iov);
+        ssize_t result = ::readv(fast_path_fd_, iov, n);
+        if (result > 0) {
+          buffer.end_ = circularAdd(buffer.end_, result);
+          activity = true;
+          continue;
+        } else if (errno != EAGAIN) {
+          buffer.eos_ = true;
+        }
+      }
+      // Try to write.
+      size = circularSub(buffer.end_, buffer.start_);
+      if (!size) {
+        // Could not read and buffer is tempty, exit loop.
+        break;
+      }
+      if (fast_path_type_ == FastPathType::KtlsSocketCopy) {
+        struct iovec iov[2];
+        int n = buffer.writeIov(iov);
+        ssize_t result = ::writev(callbacks_->ioHandle().fd(), iov, n);
+        if (result > 0) {
+          buffer.start_ = circularAdd(buffer.start_, result);
+          activity = true;
+        } else {
+          if (errno != EAGAIN) {
+            buffer.eos_ = true;
+          }
+          // Error or could not write, exit loop.
+          break;
+        }
+      } else {
+        int towrite = buffer.end_ > buffer.start_ ? buffer.end_ - buffer.start_
+                                                  : FastPathBufferSize - buffer.start_;
+        int rc = SSL_write(ssl_, &buffer.data_[buffer.start_], towrite);
+        ENVOY_CONN_LOG(trace, "ssl write returns: {}", callbacks_->connection(), rc);
+        if (rc > 0) {
+          activity = true;
+          buffer.start_ = circularAdd(buffer.start_, rc);
+        } else {
+          int err = SSL_get_error(ssl_, rc);
+          if (err != SSL_ERROR_WANT_WRITE) {
+            buffer.eos_ = true;
+          }
+          // Cannot write, exit loop.
+          break;
+        }
+      }
     }
   }
   if (activity) {

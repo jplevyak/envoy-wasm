@@ -29,6 +29,8 @@
 
 #include "extensions/transport_sockets/tls/ssl_socket.h"
 
+using envoy::config::filter::network::tcp_proxy::v2::FastPathType;
+
 namespace Envoy {
 namespace TcpProxy {
 
@@ -587,16 +589,21 @@ void Filter::onUpstreamEvent(Network::ConnectionEvent event) {
             upstream_callbacks->onBytesSent();
           });
     }
-    if (config_->sharedConfig()->fast_path() && read_callbacks_->connection().ssl() &&
-        !upstream_conn_data_->connection().ssl()) {
+    auto fast_path = FastPathType::KtlsSplice;
+    // auto fast_path = FastPathType::KtlsSocketCopy;
+    // auto fast_path = FastPathType::SslSocketCopy;
+    if (config_->sharedConfig()->fast_path() != FastPathType::None &&
+        read_callbacks_->connection().ssl() && !upstream_conn_data_->connection().ssl()) {
       auto client_connection =
           dynamic_cast<Network::ClientConnectionImpl*>(&upstream_conn_data_->connection());
       if (client_connection) {
         auto ssl_socket = static_cast<Extensions::TransportSockets::Tls::SslSocket*>(
             read_callbacks_->connection().transportSocket());
-        ssl_socket->enableFastPath(client_connection->ioHandle().fd());
+        ssl_socket->enableFastPath(client_connection->ioHandle().fd(),
+                                   // Should be "config_->sharedConfig()->fast_path()".
+                                   fast_path);
         static_cast<Network::RawBufferSocket*>(client_connection->transportSocket())
-            ->enableFastPath(ssl_socket);
+            ->enableFastPath(ssl_socket, fast_path);
         fast_path_ = true;
       }
     }

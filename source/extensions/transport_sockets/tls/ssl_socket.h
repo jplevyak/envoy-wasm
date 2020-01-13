@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <string>
 
+#include "envoy/config/filter/network/tcp_proxy/v2/tcp_proxy.pb.h"
 #include "envoy/network/connection.h"
 #include "envoy/network/transport_socket.h"
 #include "envoy/secret/secret_callbacks.h"
@@ -102,7 +103,8 @@ public:
   Ssl::ConnectionInfoConstSharedPtr ssl() const override;
   // Ssl::PrivateKeyConnectionCallbacks
   void onPrivateKeyMethodComplete() override;
-  void enableFastPath(int fd);
+  void enableFastPath(int fd,
+                      envoy::config::filter::network::tcp_proxy::v2::FastPathType fast_path_type);
   MonotonicTime lastFastPathActivity();
 
   SSL* rawSslForTest() const { return ssl_; }
@@ -132,6 +134,7 @@ private:
   bool isThreadSafe() const {
     return callbacks_ != nullptr && callbacks_->connection().dispatcher().isThreadSafe();
   }
+  void setupKTLS(int fd, bool is_tx);
 
   const Network::TransportSocketOptionsSharedPtr transport_socket_options_;
   Network::TransportSocketCallbacks* callbacks_{};
@@ -144,6 +147,7 @@ private:
   Ssl::ConnectionInfoConstSharedPtr info_;
 
   int fast_path_fd_{-1};
+  envoy::config::filter::network::tcp_proxy::v2::FastPathType fast_path_type_;
   MonotonicTime last_fast_path_activity_;
   CircularBuffer fast_path_read_buffer_;
   CircularBuffer fast_path_write_buffer_;
