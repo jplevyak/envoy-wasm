@@ -113,12 +113,8 @@ void SslSocket::setupKTLS(int fd, bool is_tx) {
   memcpy(ci.key, key, TLS_CIPHER_AES_GCM_128_KEY_SIZE);
   memcpy(ci.salt, salt, TLS_CIPHER_AES_GCM_128_SALT_SIZE);
 
-#if 0
-  memcpy(ci.iv, ci.iv + TLS_CIPHER_AES_GCM_128_SALT_SIZE, TLS_CIPHER_AES_GCM_128_IV_SIZE);
-#else
   // Explicit portion of the nonce. Can be anything.
   *(reinterpret_cast<uint64_t*>(ci.iv)) = bswap_64(0xDEADBEEF);
-#endif
 
   if (setsockopt(fd, SOL_TLS, optname, &ci, sizeof(ci))) {
     ENVOY_LOG(error, "setsockopt tls error " + (is_tx ? std::string("TX ") : std::string("RX ")) +
