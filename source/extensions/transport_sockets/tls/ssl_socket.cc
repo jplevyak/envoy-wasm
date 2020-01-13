@@ -101,9 +101,6 @@ void SslSocket::setupKTLS(int fd, bool is_tx) {
     seq = SSL_get_read_sequence(ssl_);
     key = kb.key_rx;
     salt = kb.salt_rx;
-#ifndef TLS_RX
-#define TLS_RX 2
-#endif
     optname = TLS_RX;
   }
 
@@ -117,15 +114,27 @@ void SslSocket::setupKTLS(int fd, bool is_tx) {
   memcpy(ci.salt, salt, TLS_CIPHER_AES_GCM_128_SALT_SIZE);
 
 #if 0
-  memcpy(ci.iv, ctx->iv + TLS_CIPHER_AES_GCM_128_SALT_SIZE, TLS_CIPHER_AES_GCM_128_IV_SIZE);
+  memcpy(ci.iv, ci.iv + TLS_CIPHER_AES_GCM_128_SALT_SIZE, TLS_CIPHER_AES_GCM_128_IV_SIZE);
 #else
   // Explicit portion of the nonce. Can be anything.
   *(reinterpret_cast<uint64_t*>(ci.iv)) = bswap_64(0xDEADBEEF);
 #endif
 
   if (setsockopt(fd, SOL_TLS, optname, &ci, sizeof(ci))) {
-    ENVOY_LOG(error, "setsockopt tls error");
+    ENVOY_LOG(error, "setsockopt tls error " + (is_tx ? std::string("TX ") : std::string("RX ")) +
+                         std::to_string(errno));
+    ::exit(1);
   }
+}
+
+void SslSocket::startFastPath() {
+  if (fast_path_type_ == FastPathType::KtlsSocketCopy ||
+      fast_path_type_ == FastPathType::KtlsSplice) {
+    setupKTLS(callbacks_->ioHandle().fd(), false);
+    setupKTLS(callbacks_->ioHandle().fd(), true);
+  }
+  doReadFastPath();
+  doWriteFastPath();
 }
 
 void SslSocket::enableFastPath(int fd, FastPathType fast_path_type) {
@@ -134,13 +143,6 @@ void SslSocket::enableFastPath(int fd, FastPathType fast_path_type) {
   last_fast_path_activity_ = callbacks_->connection().dispatcher().timeSource().monotonicTime();
   fast_path_read_buffer_.alloc(FastPathBufferSize);
   fast_path_write_buffer_.alloc(FastPathBufferSize);
-  if (fast_path_type_ == FastPathType::KtlsSocketCopy ||
-      fast_path_type_ == FastPathType::KtlsSplice) {
-    setupKTLS(callbacks_->ioHandle().fd(), false);
-    setupKTLS(callbacks_->ioHandle().fd(), true);
-  }
-  doReadFastPath();
-  doWriteFastPath();
 }
 
 MonotonicTime SslSocket::lastFastPathActivity() { return last_fast_path_activity_; }
@@ -380,10 +382,6 @@ bool SslSocket::doWriteFastPath() {
 }
 
 Network::IoResult SslSocket::doRead(Buffer::Instance& read_buffer) {
-  if (fast_path_fd_ >= 0) {
-    auto eos = doReadFastPath();
-    return {eos ? PostIoAction::Close : PostIoAction::KeepOpen, 0, eos};
-  }
   if (state_ != SocketState::HandshakeComplete && state_ != SocketState::ShutdownSent) {
     PostIoAction action = doHandshake();
     if (action == PostIoAction::Close || state_ != SocketState::HandshakeComplete) {
@@ -391,6 +389,13 @@ Network::IoResult SslSocket::doRead(Buffer::Instance& read_buffer) {
       // the handshake isn't complete, so a half-close cannot occur yet.
       return {action, 0, false};
     }
+    if (fast_path_fd_ >= 0) {
+      startFastPath();
+    }
+  }
+  if (fast_path_fd_ >= 0) {
+    auto eos = doReadFastPath();
+    return {eos ? PostIoAction::Close : PostIoAction::KeepOpen, 0, eos};
   }
   bool keep_reading = true;
   bool end_stream = false;
@@ -517,16 +522,19 @@ void SslSocket::drainErrorQueue() {
 }
 
 Network::IoResult SslSocket::doWrite(Buffer::Instance& write_buffer, bool end_stream) {
-  if (fast_path_fd_ >= 0) {
-    auto eos = doWriteFastPath();
-    return {eos ? PostIoAction::Close : PostIoAction::KeepOpen, 0, eos};
-  }
   ASSERT(state_ != SocketState::ShutdownSent || write_buffer.length() == 0);
   if (state_ != SocketState::HandshakeComplete && state_ != SocketState::ShutdownSent) {
     PostIoAction action = doHandshake();
     if (action == PostIoAction::Close || state_ != SocketState::HandshakeComplete) {
       return {action, 0, false};
     }
+    if (fast_path_fd_ >= 0) {
+      startFastPath();
+    }
+  }
+  if (fast_path_fd_ >= 0) {
+    auto eos = doWriteFastPath();
+    return {eos ? PostIoAction::Close : PostIoAction::KeepOpen, 0, eos};
   }
 
   uint64_t bytes_to_write;

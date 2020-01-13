@@ -105,6 +105,7 @@ public:
   void onPrivateKeyMethodComplete() override;
   void enableFastPath(int fd,
                       envoy::config::filter::network::tcp_proxy::v2::FastPathType fast_path_type);
+  void startFastPath();
   MonotonicTime lastFastPathActivity();
 
   SSL* rawSslForTest() const { return ssl_; }
