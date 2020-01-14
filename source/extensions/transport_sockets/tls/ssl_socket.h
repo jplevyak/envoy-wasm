@@ -90,6 +90,7 @@ class SslSocket : public Network::TransportSocket,
 public:
   SslSocket(Envoy::Ssl::ContextSharedPtr ctx, InitialState state,
             const Network::TransportSocketOptionsSharedPtr& transport_socket_options);
+  ~SslSocket();
 
   // Network::TransportSocket
   void setTransportSocketCallbacks(Network::TransportSocketCallbacks& callbacks) override;
@@ -148,6 +149,8 @@ private:
   Ssl::ConnectionInfoConstSharedPtr info_;
 
   int fast_path_fd_{-1};
+  int fast_path_read_pipe_[2];
+  int fast_path_write_pipe_[2];
   envoy::config::filter::network::tcp_proxy::v2::FastPathType fast_path_type_;
   MonotonicTime last_fast_path_activity_;
   CircularBuffer fast_path_read_buffer_;

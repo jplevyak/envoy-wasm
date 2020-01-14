@@ -65,6 +65,15 @@ SslSocket::SslSocket(Envoy::Ssl::ContextSharedPtr ctx, InitialState state,
   }
 }
 
+SslSocket::~SslSocket() {
+  if (fast_path_type_ == FastPathType::KtlsSplice) {
+    ::close(fast_path_read_pipe_[0]);
+    ::close(fast_path_read_pipe_[1]);
+    ::close(fast_path_write_pipe_[0]);
+    ::close(fast_path_write_pipe_[1]);
+  }
+}
+
 struct boringssl_aesgcm128_keyblock {
   unsigned char key_rx[TLS_CIPHER_AES_GCM_128_KEY_SIZE];
   unsigned char key_tx[TLS_CIPHER_AES_GCM_128_KEY_SIZE];
@@ -126,8 +135,17 @@ void SslSocket::setupKTLS(int fd, bool is_tx) {
 void SslSocket::startFastPath() {
   if (fast_path_type_ == FastPathType::KtlsSocketCopy ||
       fast_path_type_ == FastPathType::KtlsSplice) {
-    setupKTLS(callbacks_->ioHandle().fd(), false);
-    setupKTLS(callbacks_->ioHandle().fd(), true);
+    auto fd = callbacks_->ioHandle().fd();
+    if (setsockopt(fd, IPPROTO_TCP, TCP_ULP, "tls", sizeof("tls")))
+      ENVOY_LOG(error, "setsockopt upper layer protocol");
+    setupKTLS(fd, false);
+    setupKTLS(fd, true);
+    if (fast_path_type_ == FastPathType::KtlsSplice) {
+      if (::pipe2(fast_path_read_pipe_, O_NONBLOCK) < 0)
+        ENVOY_LOG(error, "pipe failure");
+      if (::pipe2(fast_path_write_pipe_, O_NONBLOCK) < 0)
+        ENVOY_LOG(error, "pipe failure");
+    }
   }
   doReadFastPath();
   doWriteFastPath();
@@ -222,12 +240,26 @@ bool SslSocket::doReadFastPath() {
   bool activity = false;
   auto& buffer = fast_path_read_buffer_;
   if (fast_path_type_ == FastPathType::KtlsSplice) {
-    auto n = ::splice(callbacks_->ioHandle().fd(), nullptr, fast_path_fd_, nullptr, INT32_MAX,
+    auto n = ::splice(callbacks_->ioHandle().fd(), nullptr, fast_path_read_pipe_[1], nullptr, 16384,
                       SPLICE_F_MOVE | SPLICE_F_MORE | SPLICE_F_NONBLOCK);
     if (n > 0) {
+      // std::cerr << "read splice " << n << "\n";
       activity = true;
+      while (n > 0) {
+        auto r = ::splice(fast_path_read_pipe_[0], nullptr, fast_path_fd_, nullptr, n,
+                          SPLICE_F_MOVE | SPLICE_F_MORE | SPLICE_F_NONBLOCK);
+        // std::cerr << "read splice write " << r << "\n";
+        if (r <= 0 && errno != EAGAIN) {
+          std::cerr << "read pipe errno " << errno << " from " << fast_path_fd_ << " to  "
+                    << callbacks_->ioHandle().fd() << "\n";
+          break;
+        }
+        n -= r;
+      }
     } else {
       if (errno != EAGAIN) {
+        std::cerr << "read errno " << errno << " from " << callbacks_->ioHandle().fd() << " to  "
+                  << fast_path_fd_ << "\n";
         buffer.eos_ = true;
       }
     }
@@ -307,12 +339,26 @@ bool SslSocket::doWriteFastPath() {
   bool activity = false;
   auto& buffer = fast_path_write_buffer_;
   if (fast_path_type_ == FastPathType::KtlsSplice) {
-    auto n = ::splice(fast_path_fd_, nullptr, callbacks_->ioHandle().fd(), nullptr, INT32_MAX,
+    auto n = ::splice(fast_path_fd_, nullptr, fast_path_write_pipe_[1], nullptr, 16384,
                       SPLICE_F_MOVE | SPLICE_F_MORE | SPLICE_F_NONBLOCK);
+    // std::cerr << "write splice " << n << "\n";
     if (n > 0) {
       activity = true;
+      while (n > 0) {
+        auto r = ::splice(fast_path_write_pipe_[0], nullptr, callbacks_->ioHandle().fd(), nullptr,
+                          n, SPLICE_F_MOVE | SPLICE_F_MORE | SPLICE_F_NONBLOCK);
+        // std::cerr << "write splice write " << r << "\n";
+        if (r <= 0 && errno != EAGAIN) {
+          std::cerr << "write pipe errno " << errno << " from " << fast_path_fd_ << " to  "
+                    << callbacks_->ioHandle().fd() << "\n";
+          break;
+        }
+        n -= r;
+      }
     } else {
       if (errno != EAGAIN) {
+        std::cerr << "write errno " << errno << " from " << fast_path_fd_ << " to  "
+                  << callbacks_->ioHandle().fd() << "\n";
         buffer.eos_ = true;
       }
     }
