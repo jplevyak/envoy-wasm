@@ -34,6 +34,7 @@ envoy_cc_test(
         "//source/common/stats:stats_lib",
         "//source/extensions/common/wasm:wasm_lib",
         "//test/extensions/common/wasm/test_data:test_cpp_plugin",
+        "//test/extensions/common/wasm/test_data/test_cpp:test_cpp.wasm",
         "//test/mocks/server:server_mocks",
         "//test/test_common:environment_lib",
         "//test/test_common:simulated_time_system_lib",
