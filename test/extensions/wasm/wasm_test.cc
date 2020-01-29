@@ -65,7 +65,7 @@ TEST_P(WasmTestMatrix, Logging) {
   auto vm_id = "";
   auto vm_configuration = "";
   auto plugin = std::make_shared<Extensions::Common::Wasm::Plugin>(
-      name, root_id, vm_id, envoy::config::core::v3alpha::TrafficDirection::UNSPECIFIED, local_info,
+      name, root_id, vm_id, envoy::config::core::v3::TrafficDirection::UNSPECIFIED, local_info,
       nullptr);
   auto wasm = std::make_shared<Extensions::Common::Wasm::Wasm>(
       absl::StrCat("envoy.wasm.runtime.", std::get<0>(GetParam())), vm_id, vm_configuration, scope,
@@ -112,7 +112,7 @@ TEST_P(WasmTest, BadSignature) {
   auto vm_id = "";
   auto vm_configuration = "";
   auto plugin = std::make_shared<Extensions::Common::Wasm::Plugin>(
-      name, root_id, vm_id, envoy::config::core::v3alpha::TrafficDirection::UNSPECIFIED, local_info,
+      name, root_id, vm_id, envoy::config::core::v3::TrafficDirection::UNSPECIFIED, local_info,
       nullptr);
   auto wasm = std::make_unique<Extensions::Common::Wasm::Wasm>(
       absl::StrCat("envoy.wasm.runtime.", GetParam()), vm_id, vm_configuration, scope,
@@ -138,7 +138,7 @@ TEST_P(WasmTest, Segv) {
   auto vm_id = "";
   auto vm_configuration = "";
   auto plugin = std::make_shared<Extensions::Common::Wasm::Plugin>(
-      name, root_id, vm_id, envoy::config::core::v3alpha::TrafficDirection::UNSPECIFIED, local_info,
+      name, root_id, vm_id, envoy::config::core::v3::TrafficDirection::UNSPECIFIED, local_info,
       nullptr);
   auto wasm = std::make_unique<Extensions::Common::Wasm::Wasm>(
       absl::StrCat("envoy.wasm.runtime.", GetParam()), vm_id, vm_configuration, scope,
@@ -153,11 +153,11 @@ TEST_P(WasmTest, Segv) {
   if (GetParam() == "v8") {
     EXPECT_THROW_WITH_MESSAGE(
         wasm->startForTesting(std::move(context), plugin), Extensions::Common::Wasm::WasmException,
-        "Function: proxy_on_start failed: Uncaught RuntimeError: unreachable");
+        "Function: proxy_on_vm_start failed: Uncaught RuntimeError: unreachable");
   } else if (GetParam() == "wavm") {
     EXPECT_THROW_WITH_REGEX(wasm->startForTesting(std::move(context), plugin),
                             Extensions::Common::Wasm::WasmException,
-                            "Function: proxy_on_start failed: wavm.reachedUnreachable.*");
+                            "Function: proxy_on_vm_start failed: wavm.reachedUnreachable.*");
   } else {
     ASSERT_FALSE(true); // Neither of the above was matched.
   }
@@ -175,7 +175,7 @@ TEST_P(WasmTest, DivByZero) {
   auto vm_id = "";
   auto vm_configuration = "";
   auto plugin = std::make_shared<Extensions::Common::Wasm::Plugin>(
-      name, root_id, vm_id, envoy::config::core::v3alpha::TrafficDirection::UNSPECIFIED, local_info,
+      name, root_id, vm_id, envoy::config::core::v3::TrafficDirection::UNSPECIFIED, local_info,
       nullptr);
   auto wasm = std::make_unique<Extensions::Common::Wasm::Wasm>(
       absl::StrCat("envoy.wasm.runtime.", GetParam()), vm_id, vm_configuration, scope,
@@ -213,7 +213,7 @@ TEST_P(WasmTest, EmscriptenVersion) {
   auto vm_id = "";
   auto vm_configuration = "";
   auto plugin = std::make_shared<Extensions::Common::Wasm::Plugin>(
-      name, root_id, vm_id, envoy::config::core::v3alpha::TrafficDirection::UNSPECIFIED, local_info,
+      name, root_id, vm_id, envoy::config::core::v3::TrafficDirection::UNSPECIFIED, local_info,
       nullptr);
   auto wasm = std::make_unique<Extensions::Common::Wasm::Wasm>(
       absl::StrCat("envoy.wasm.runtime.", GetParam()), vm_id, vm_configuration, scope,
@@ -228,9 +228,9 @@ TEST_P(WasmTest, EmscriptenVersion) {
   EXPECT_TRUE(wasm->getEmscriptenVersion(&major, &minor, &abi_major, &abi_minor));
   EXPECT_EQ(major, 0);
   EXPECT_LE(minor, 3);
-  // Up to (at least) emsdk 1.39.0.
+  // Up to (at least) emsdk 1.39.6.
   EXPECT_EQ(abi_major, 0);
-  EXPECT_LE(abi_minor, 19);
+  EXPECT_LE(abi_minor, 20);
 }
 
 TEST_P(WasmTest, IntrinsicGlobals) {
@@ -245,7 +245,7 @@ TEST_P(WasmTest, IntrinsicGlobals) {
   auto vm_id = "";
   auto vm_configuration = "";
   auto plugin = std::make_shared<Extensions::Common::Wasm::Plugin>(
-      name, root_id, vm_id, envoy::config::core::v3alpha::TrafficDirection::UNSPECIFIED, local_info,
+      name, root_id, vm_id, envoy::config::core::v3::TrafficDirection::UNSPECIFIED, local_info,
       nullptr);
   auto wasm = std::make_unique<Extensions::Common::Wasm::Wasm>(
       absl::StrCat("envoy.wasm.runtime.", GetParam()), vm_id, vm_configuration, scope,
@@ -279,7 +279,7 @@ TEST_P(WasmTest, Asm2Wasm) {
   auto vm_id = "";
   auto vm_configuration = "";
   auto plugin = std::make_shared<Extensions::Common::Wasm::Plugin>(
-      name, root_id, vm_id, envoy::config::core::v3alpha::TrafficDirection::UNSPECIFIED, local_info,
+      name, root_id, vm_id, envoy::config::core::v3::TrafficDirection::UNSPECIFIED, local_info,
       nullptr);
   auto wasm = std::make_unique<Extensions::Common::Wasm::Wasm>(
       absl::StrCat("envoy.wasm.runtime.", GetParam()), vm_id, vm_configuration, scope,
@@ -306,7 +306,7 @@ TEST_P(WasmTest, Stats) {
   auto vm_id = "";
   auto vm_configuration = "";
   auto plugin = std::make_shared<Extensions::Common::Wasm::Plugin>(
-      name, root_id, vm_id, envoy::config::core::v3alpha::TrafficDirection::UNSPECIFIED, local_info,
+      name, root_id, vm_id, envoy::config::core::v3::TrafficDirection::UNSPECIFIED, local_info,
       nullptr);
   auto wasm = std::make_unique<Extensions::Common::Wasm::Wasm>(
       absl::StrCat("envoy.wasm.runtime.", GetParam()), vm_id, vm_configuration, scope,
@@ -341,7 +341,7 @@ TEST_P(WasmTest, StatsHigherLevel) {
   auto vm_id = "";
   auto vm_configuration = "";
   auto plugin = std::make_shared<Extensions::Common::Wasm::Plugin>(
-      name, root_id, vm_id, envoy::config::core::v3alpha::TrafficDirection::UNSPECIFIED, local_info,
+      name, root_id, vm_id, envoy::config::core::v3::TrafficDirection::UNSPECIFIED, local_info,
       nullptr);
   auto wasm = std::make_unique<Extensions::Common::Wasm::Wasm>(
       absl::StrCat("envoy.wasm.runtime.", GetParam()), vm_id, vm_configuration, scope,
@@ -381,7 +381,7 @@ TEST_P(WasmTest, StatsHighLevel) {
   auto vm_id = "";
   auto vm_configuration = "";
   auto plugin = std::make_shared<Extensions::Common::Wasm::Plugin>(
-      name, root_id, vm_id, envoy::config::core::v3alpha::TrafficDirection::UNSPECIFIED, local_info,
+      name, root_id, vm_id, envoy::config::core::v3::TrafficDirection::UNSPECIFIED, local_info,
       nullptr);
   auto wasm = std::make_unique<Extensions::Common::Wasm::Wasm>(
       absl::StrCat("envoy.wasm.runtime.", GetParam()), vm_id, vm_configuration, scope,

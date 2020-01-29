@@ -47,12 +47,12 @@ namespace Extensions {
 namespace HttpFilters {
 namespace Wasm {
 
-using envoy::config::core::v3alpha::TrafficDirection;
+using envoy::config::core::v3::TrafficDirection;
 using Envoy::Extensions::Common::Wasm::PluginSharedPtr;
 using Envoy::Extensions::Common::Wasm::Wasm;
 using Envoy::Extensions::Common::Wasm::WasmHandleSharedPtr;
-using GrpcService = envoy::config::core::v3alpha::GrpcService;
-using WasmFilterConfig = envoy::config::filter::http::wasm::v3alpha::Wasm;
+using GrpcService = envoy::config::core::v3::GrpcService;
+using WasmFilterConfig = envoy::extensions::filters::http::wasm::v3::Wasm;
 
 class TestFilter : public Envoy::Extensions::Common::Wasm::Context {
 public:
@@ -149,7 +149,7 @@ public:
   NiceMock<Http::MockStreamEncoderFilterCallbacks> encoder_callbacks_;
   NiceMock<Envoy::StreamInfo::MockStreamInfo> request_stream_info_;
   NiceMock<LocalInfo::MockLocalInfo> local_info_;
-  envoy::config::core::v3alpha::Metadata listener_metadata_;
+  envoy::config::core::v3::Metadata listener_metadata_;
   TestRoot* root_context_ = nullptr;
   Config::DataSource::RemoteAsyncDataProviderPtr remote_data_provider_;
 };
@@ -422,7 +422,7 @@ TEST_P(WasmHttpFilterTest, Metadata) {
   setupConfig(TestEnvironment::readFileToStringForTest(TestEnvironment::substitute(
       "{{ test_rundir }}/test/extensions/filters/http/wasm/test_data/metadata_cpp.wasm")));
   setupFilter();
-  envoy::config::core::v3alpha::Node node_data;
+  envoy::config::core::v3::Node node_data;
   ProtobufWkt::Value node_val;
   node_val.set_string_value("wasm_node_get_value");
   (*node_data.mutable_metadata()->mutable_fields())["wasm_node_get_key"] = node_val;
@@ -439,6 +439,8 @@ TEST_P(WasmHttpFilterTest, Metadata) {
       *filter_,
       scriptLog_(spdlog::level::trace,
                  Eq(absl::string_view("Struct wasm_request_get_value wasm_request_get_value"))));
+  EXPECT_CALL(*filter_,
+              scriptLog_(spdlog::level::info, Eq(absl::string_view("server is envoy-wasm"))));
 
   request_stream_info_.metadata_.mutable_filter_metadata()->insert(
       Protobuf::MapPair<std::string, ProtobufWkt::Struct>(
@@ -448,11 +450,18 @@ TEST_P(WasmHttpFilterTest, Metadata) {
   wasm_->wasm()->tickHandler(root_context_->id());
 
   EXPECT_CALL(encoder_callbacks_, streamInfo()).WillRepeatedly(ReturnRef(request_stream_info_));
+  absl::optional<std::chrono::nanoseconds> dur = std::chrono::nanoseconds(15000000);
+  EXPECT_CALL(request_stream_info_, requestComplete()).WillRepeatedly(Return(dur));
+  EXPECT_CALL(*filter_,
+              scriptLog_(spdlog::level::info, Eq(absl::string_view("duration is 15000000"))));
+  EXPECT_CALL(*filter_,
+              scriptLog_(spdlog::level::info, Eq(absl::string_view("grpc service: test"))));
   Http::TestHeaderMapImpl request_headers{{":path", "/"}};
   EXPECT_EQ(Http::FilterHeadersStatus::Continue, filter_->decodeHeaders(request_headers, true));
   Buffer::OwnedImpl data("hello");
   EXPECT_EQ(Http::FilterDataStatus::Continue, filter_->decodeData(data, true));
   filter_->onDestroy();
+
   StreamInfo::MockStreamInfo log_stream_info;
   filter_->log(&request_headers, nullptr, nullptr, log_stream_info);
 
@@ -479,7 +488,7 @@ TEST_F(WasmHttpFilterTest, NullPluginRequestHeadersOnly) {
 TEST_F(WasmHttpFilterTest, NullVmResolver) {
   setupNullConfig("null_vm_plugin");
   setupFilter();
-  envoy::config::core::v3alpha::Node node_data;
+  envoy::config::core::v3::Node node_data;
   ProtobufWkt::Value node_val;
   node_val.set_string_value("sample_data");
   (*node_data.mutable_metadata()->mutable_fields())["istio.io/metadata"] = node_val;

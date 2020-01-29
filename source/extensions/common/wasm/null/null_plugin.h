@@ -47,9 +47,12 @@ namespace Plugin {
 struct NullPluginRegistry {
   uint32_t (*proxy_validate_configuration_)(uint32_t root_context_id,
                                             uint32_t plugin_configuration_size) = nullptr;
-  uint32_t (*proxy_on_start_)(uint32_t root_context_id, uint32_t vm_configuration_size) = nullptr;
+  uint32_t (*proxy_on_context_create_)(uint32_t context_id, uint32_t parent_context_id) = nullptr;
+  uint32_t (*proxy_on_vm_start_)(uint32_t root_context_id,
+                                 uint32_t vm_configuration_size) = nullptr;
   uint32_t (*proxy_on_configure_)(uint32_t root_context_id,
                                   uint32_t plugin_configuration_size) = nullptr;
+  void (*proxy_on_tick_)(uint32_t context_id) = nullptr;
   uint32_t (*proxy_on_done_)(uint32_t context_id) = nullptr;
   void (*proxy_on_delete_)(uint32_t context_id) = nullptr;
   std::unordered_map<std::string, Plugin::RootFactory> root_factories;
@@ -122,6 +125,31 @@ private:
   std::unordered_map<int64_t, std::unique_ptr<Plugin::ContextBase>> context_map_;
 };
 
+#define NULL_PLUGIN_REGISTRY                                                                       \
+  extern ThreadSafeSingleton<Envoy::Extensions::Common::Wasm::Null::NullPluginRegistry>            \
+      null_plugin_registry_;                                                                       \
+  extern Envoy::Extensions::Common::Wasm::Null::NullPluginRegistry* context_registry_;             \
+  struct RegisterContextFactory {                                                                  \
+    explicit RegisterContextFactory(                                                               \
+        Envoy::Extensions::Common::Wasm::Null::Plugin::ContextFactory context_factory,             \
+        Envoy::Extensions::Common::Wasm::Null::Plugin::RootFactory root_factory = nullptr,         \
+        StringView root_id = "") {                                                                 \
+      if (!context_registry_) {                                                                    \
+        context_registry_ = new Envoy::Extensions::Common::Wasm::Null::NullPluginRegistry;         \
+      }                                                                                            \
+      context_registry_->context_factories[std::string(root_id)] = context_factory;                \
+      context_registry_->root_factories[std::string(root_id)] = root_factory;                      \
+    }                                                                                              \
+    explicit RegisterContextFactory(                                                               \
+        Envoy::Extensions::Common::Wasm::Null::Plugin::RootFactory root_factory,                   \
+        StringView root_id = "") {                                                                 \
+      if (!context_registry_) {                                                                    \
+        context_registry_ = new Envoy::Extensions::Common::Wasm::Null::NullPluginRegistry;         \
+      }                                                                                            \
+      context_registry_->root_factories[std::string(root_id)] = root_factory;                      \
+    }                                                                                              \
+  };
+
 #define START_WASM_PLUGIN(_name)                                                                   \
   namespace Envoy {                                                                                \
   namespace Extensions {                                                                           \
@@ -130,24 +158,7 @@ private:
   namespace Null {                                                                                 \
   namespace Plugin {                                                                               \
   namespace _name {                                                                                \
-  extern ThreadSafeSingleton<Null::NullPluginRegistry> null_plugin_registry_;                      \
-  extern NullPluginRegistry* context_registry_;                                                    \
-  struct RegisterContextFactory {                                                                  \
-    explicit RegisterContextFactory(ContextFactory context_factory,                                \
-                                    RootFactory root_factory = nullptr, StringView root_id = "") { \
-      if (!context_registry_) {                                                                    \
-        context_registry_ = new NullPluginRegistry;                                                \
-      }                                                                                            \
-      context_registry_->context_factories[std::string(root_id)] = context_factory;                \
-      context_registry_->root_factories[std::string(root_id)] = root_factory;                      \
-    }                                                                                              \
-    explicit RegisterContextFactory(RootFactory root_factory, StringView root_id = "") {           \
-      if (!context_registry_) {                                                                    \
-        context_registry_ = new NullPluginRegistry;                                                \
-      }                                                                                            \
-      context_registry_->root_factories[std::string(root_id)] = root_factory;                      \
-    }                                                                                              \
-  };
+  NULL_PLUGIN_REGISTRY
 
 #define END_WASM_PLUGIN                                                                            \
   }                                                                                                \

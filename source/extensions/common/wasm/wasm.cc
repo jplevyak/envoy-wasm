@@ -9,7 +9,7 @@
 #include <string>
 
 #include "envoy/common/exception.h"
-#include "envoy/config/wasm/v3alpha/wasm.pb.validate.h"
+#include "envoy/extensions/wasm/v3/wasm.pb.validate.h"
 #include "envoy/grpc/status.h"
 #include "envoy/http/codes.h"
 #include "envoy/local_info/local_info.h"
@@ -27,6 +27,7 @@
 #include "common/http/utility.h"
 #include "common/tracing/http_tracer_impl.h"
 
+#include "extensions/common/wasm/foreign.h"
 #include "extensions/common/wasm/wasm_state.h"
 #include "extensions/common/wasm/well_known_names.h"
 #include "extensions/filters/common/expr/context.h"
@@ -119,6 +120,10 @@ void Wasm::registerCallbacks() {
   wasm_vm_->registerCallback(                                                                      \
       "wasi_unstable", #_fn, &Exports::wasi_unstable_##_fn,                                        \
       &ConvertFunctionWordToUint32<decltype(Exports::wasi_unstable_##_fn),                         \
+                                   Exports::wasi_unstable_##_fn>::convertFunctionWordToUint32);    \
+  wasm_vm_->registerCallback(                                                                      \
+      "wasi_snapshot_preview1", #_fn, &Exports::wasi_unstable_##_fn,                               \
+      &ConvertFunctionWordToUint32<decltype(Exports::wasi_unstable_##_fn),                         \
                                    Exports::wasi_unstable_##_fn>::convertFunctionWordToUint32)
   _REGISTER_WASI(fd_write);
   _REGISTER_WASI(fd_seek);
@@ -186,6 +191,7 @@ void Wasm::registerCallbacks() {
 
   _REGISTER_PROXY(set_effective_context);
   _REGISTER_PROXY(done);
+  _REGISTER_PROXY(call_foreign_function);
 #undef _REGISTER_PROXY
 }
 
@@ -200,11 +206,11 @@ void Wasm::getFunctions() {
 
 #define _GET_PROXY(_fn) wasm_vm_->getFunction("proxy_" #_fn, &_fn##_);
   _GET_PROXY(validate_configuration);
-  _GET_PROXY(on_start);
+  _GET_PROXY(on_vm_start);
   _GET_PROXY(on_configure);
   _GET_PROXY(on_tick);
 
-  _GET_PROXY(on_create);
+  _GET_PROXY(on_context_create);
 
   _GET_PROXY(on_new_connection);
   _GET_PROXY(on_downstream_data);
@@ -455,6 +461,20 @@ void Wasm::queueReady(uint32_t root_context_id, uint32_t token) {
   it->second->onQueueReady(token);
 }
 
+WasmForeignFunction Wasm::getForeignFunction(absl::string_view function_name) {
+  auto it = foreign_functions_.find(function_name);
+  if (it != foreign_functions_.end()) {
+    return it->second;
+  }
+  auto factory = Registry::FactoryRegistry<ForeignFunctionFactory>::getFactory(function_name);
+  if (factory) {
+    auto f = factory->create();
+    foreign_functions_[function_name] = f;
+    return f;
+  }
+  return WasmForeignFunction();
+}
+
 static void createWasmInternal(const VmConfig& vm_config, PluginSharedPtr plugin,
                                Stats::ScopeSharedPtr scope,
                                Upstream::ClusterManager& cluster_manager,
@@ -512,7 +532,7 @@ void createWasm(const VmConfig& vm_config, PluginSharedPtr plugin, Stats::ScopeS
                      nullptr /* root_context_for_testing */, remote_data_provider, std::move(cb));
 }
 
-void createWasmForTesting(const envoy::config::wasm::v3alpha::VmConfig& vm_config,
+void createWasmForTesting(const envoy::extensions::wasm::v3::VmConfig& vm_config,
                           PluginSharedPtr plugin, Stats::ScopeSharedPtr scope,
                           Upstream::ClusterManager& cluster_manager, Init::Manager& init_manager,
                           Event::Dispatcher& dispatcher, Api::Api& api,
