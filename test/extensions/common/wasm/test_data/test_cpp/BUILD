@@ -1,13 +1,5 @@
 load("@rules_proto//proto:defs.bzl", "proto_library")
 
-filegroup(
-    name = "test_cpp_srcs",
-    srcs = [
-        "test_cpp.cc",
-    ],
-    visibility = ["//visibility:public"],
-)
-
 cc_binary(
     name = "test_cpp.wasm",
     srcs = [
@@ -23,3 +15,5 @@ cc_binary(
     ],
     visibility = ["//visibility:public"],
 )
+
+exports_files(["test_cpp.cc"])

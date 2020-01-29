@@ -13,6 +13,17 @@ filegroup(
     srcs = glob(["*.wasm"]),
 )
 
+genrule(
+    name = "copy_test_wasm",
+    srcs = [
+        "@common_wasm_test_cpp//:test_cpp.cc"
+    ],
+    outs = [
+        "test_cpp.cc",
+    ],
+    cmd = "cp $(location @common_wasm_test_cpp//:test_cpp.cc) $(@)",
+)
+
 envoy_cc_library(
     name = "test_cpp_plugin",
     srcs = [

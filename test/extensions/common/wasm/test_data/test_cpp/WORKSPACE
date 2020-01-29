@@ -1,8 +1,7 @@
-workspace(name = "filter_example")
+workspace(name = "common_wasm_test_cpp")
 
 load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository", "new_git_repository")
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
-
 
 http_archive(
   name = 'emscripten_toolchain',
@@ -14,14 +13,6 @@ http_archive(
       "./emsdk activate --embedded 1.39.0-upstream",
   ]
 )
-
-# TODO: consider fixing this so that we don't need install and activate above.
-# http_archive(
-#   name = 'emscripten_clang',
-#   url = 'https://s3.amazonaws.com/mozilla-games/emscripten/packages/llvm/tag/linux_64bit/emscripten-llvm-e1.37.22.tar.gz',
-#   build_file = '//:emscripten-clang.BUILD',
-#   strip_prefix = "emscripten-llvm-e1.37.22",
-# )
 
 http_archive(
     name = "bazel_skylib",
@@ -42,16 +33,10 @@ git_repository(
     commit = "655310ca192a6e3a050e0ca0b7084a2968072260",
 )
 
-# we don't need all the envoy buildry,
-# and so i go in straight to the api/wasm/cpp so that i can create a new workspace with
-# just the things needed.
-new_git_repository(
+new_local_repository(
     name = "envoy_wasm_api",
-    remote = "https://github.com/envoyproxy/envoy-wasm",
-    commit = "542558a722e23225cb1f6e2c8194c093f993f9c8",
+    path = "../../../../../../api/wasm/cpp",
     workspace_file_content = 'workspace(name = "envoy_wasm_api")',
-    strip_prefix = "api/wasm/cpp",
-    patch_cmds = ["rm BUILD"],
     build_file = '//bazel/external:envoy-wasm-api.BUILD',
 )
 
