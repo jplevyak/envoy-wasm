@@ -25,7 +25,7 @@ envoy_cc_test(
     name = "wasm_test",
     srcs = ["wasm_test.cc"],
     data = [
-        "@common_wasm_test_cpp//:test_cpp.wasm",
+        "//test/extensions/common/test_data:copy_test_cpp_wasm",
     ],
     external_deps = ["abseil_optional"],
     deps = [

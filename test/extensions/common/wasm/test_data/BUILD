@@ -14,7 +14,7 @@ filegroup(
 )
 
 genrule(
-    name = "copy_test_wasm",
+    name = "copy_test_cpp",
     srcs = [
         "@common_wasm_test_cpp//:test_cpp.cc"
     ],
@@ -23,6 +23,17 @@ genrule(
     ],
     cmd = "cp $(location @common_wasm_test_cpp//:test_cpp.cc) $(@)",
 )
+
+#genrule(
+#    name = "copy_test_cpp_wasm",
+#    srcs = [
+#        "@common_wasm_test_cpp//:test_cpp.cc"
+#    ],
+#    outs = [
+#        "test_cpp.wasm",
+#    ],
+#    cmd = "export HOME=.;cd `dirname $(location @common_wasm_test_cpp//:test_cpp.cc)`; bazel build :all; cp bazel-bin/test_cpp.wasm $(@)",
+#)
 
 envoy_cc_library(
     name = "test_cpp_plugin",

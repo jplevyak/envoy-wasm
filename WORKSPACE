@@ -33,9 +33,9 @@ antlr_dependencies(471)
 #    commit = "ffcc7a2a8140d6ab8ef7ca26a423143c4adabcc1",
 #)
 
-new_local_repository(
-    name = "envoy_wasm_api",
-    path = "api/wasm/cpp",
-    workspace_file_content = 'workspace(name = "envoy_wasm_api")',
-    build_file = '//bazel/external:envoy-wasm-api.BUILD',
-)
+#new_local_repository(
+#    name = "envoy_wasm_api",
+#    path = "api/wasm/cpp",
+#    workspace_file_content = 'workspace(name = "envoy_wasm_api")',
+#    build_file = '//bazel/external:envoy-wasm-api.BUILD',
+#)
