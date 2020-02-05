@@ -3,7 +3,7 @@
 #include <unordered_map>
 
 #include "proxy_wasm_intrinsics.h"
-#include "proxy_wasm_intrinsics_lite.pb.h"
+#include "proxy_wasm_intrinsics.pb.h"
 
 class ExampleContext : public Context {
 public:
