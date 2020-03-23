@@ -2,6 +2,7 @@
 
 #include <poll.h>
 #include <linux/tls.h>
+#include <linux/sockios.h>
 
 #include "envoy/stats/scope.h"
 
@@ -258,9 +259,15 @@ bool SslSocket::doReadFastPath() {
     // if (r < 0 || !(fds.revents & POLLIN)) {
     //  return false;
     // }
+
+    // This mostly returns 0, but the subsequent splice moves 82 bytes... the same 82 over and over.
+    int pending = 0;
+    auto ir = ioctl(callbacks_->ioHandle().fd(), SIOCINQ, &pending);
+    std::cerr << "pending " << ir << " bytes " << pending << "\n";
     auto n = ::splice(callbacks_->ioHandle().fd(), nullptr, fast_path_read_pipe_[1], nullptr, 16384,
                       SPLICE_F_NONBLOCK |
                           SPLICE_F_MOVE /* SPLICE_F_MOVE | SPLICE_F_MORE | SPLICE_F_NONBLOCK */);
+    auto e = errno;
     if (n > 0) {
       std::cerr << "read splice " << n << "\n";
       activity = true;
@@ -269,9 +276,10 @@ bool SslSocket::doReadFastPath() {
             ::splice(fast_path_read_pipe_[0], nullptr, fast_path_fd_, nullptr, n,
                      SPLICE_F_NONBLOCK |
                          SPLICE_F_MOVE /* SPLICE_F_MOVE | SPLICE_F_MORE | SPLICE_F_NONBLOCK */);
+        auto e = errno;
         std::cerr << "read splice write " << r << " of " << n << "\n";
-        if (r <= 0 && errno != EAGAIN) {
-          std::cerr << "read pipe errno " << errno << " from " << fast_path_fd_ << " to  "
+        if (r <= 0 && e != EAGAIN) {
+          std::cerr << "read pipe errno " << e << " from " << fast_path_fd_ << " to  "
                     << callbacks_->ioHandle().fd() << "\n";
           break;
         }
@@ -279,9 +287,9 @@ bool SslSocket::doReadFastPath() {
       }
       std::cerr << "read splice end " << n << "\n";
     } else {
-      std::cerr << "read errno " << errno << "\n";
-      if (errno != EAGAIN) {
-        std::cerr << "read errno " << errno << " from " << callbacks_->ioHandle().fd() << " to  "
+      std::cerr << "read " << n << " errno " << e << "\n";
+      if (n == 0 || e != EAGAIN) {
+        std::cerr << "read errno " << e << " from " << callbacks_->ioHandle().fd() << " to  "
                   << fast_path_fd_ << "\n";
         buffer.eos_ = true;
       }
@@ -369,6 +377,7 @@ bool SslSocket::doWriteFastPath() {
     // std::cerr << "write splice peek " << p.rc_ << "\n";
     auto n = ::splice(fast_path_fd_, nullptr, fast_path_write_pipe_[1], nullptr, 16384,
                       SPLICE_F_NONBLOCK /* *SPLICE_F_MOVE | SPLICE_F_MORE | SPLICE_F_NONBLOCK */);
+    auto e = errno;
     std::cerr << "write splice " << n << "\n";
     if (n > 0) {
       activity = true;
@@ -376,9 +385,10 @@ bool SslSocket::doWriteFastPath() {
         auto r =
             ::splice(fast_path_write_pipe_[0], nullptr, callbacks_->ioHandle().fd(), nullptr, n,
                      SPLICE_F_NONBLOCK /* SPLICE_F_MOVE | SPLICE_F_MORE | SPLICE_F_NONBLOCK */);
+        auto e = errno;
         std::cerr << "write splice write " << r << " of " << n << "\n";
-        if (r <= 0 && errno != EAGAIN) {
-          std::cerr << "write pipe errno " << errno << " from " << fast_path_fd_ << " to  "
+        if (r <= 0 && e != EAGAIN) {
+          std::cerr << "write pipe errno " << e << " from " << fast_path_fd_ << " to  "
                     << callbacks_->ioHandle().fd() << "\n";
           break;
         }
@@ -386,8 +396,9 @@ bool SslSocket::doWriteFastPath() {
       }
       std::cerr << "write splice write end " << n << "\n";
     } else {
-      if (errno != EAGAIN) {
-        std::cerr << "write errno " << errno << " from " << fast_path_fd_ << " to  "
+      std::cerr << "write " << n << " errno " << e << "\n";
+      if (n == 0 || e != EAGAIN) {
+        std::cerr << "write errno " << e << " from " << fast_path_fd_ << " to  "
                   << callbacks_->ioHandle().fd() << "\n";
         buffer.eos_ = true;
       }
