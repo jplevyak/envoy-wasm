@@ -25,6 +25,7 @@ envoy_cc_library(
         "//external:abseil_node_hash_map",
         "//source/common/common:assert_lib",
         "//source/common/common:c_smart_ptr_lib",
+        "//source/extensions/common/wasm:declare_property_cc_proto",
         "//source/extensions/common/wasm:wasm_lib",
         "//source/extensions/common/wasm:well_known_names",
         "@envoy_api//envoy/config/core/v3:pkg_cc_proto",
@@ -87,7 +88,7 @@ wasm_cc_binary(
     name = "speed_cpp.wasm",
     srcs = ["speed_cpp.cc"],
     deps = [
-        "@proxy_wasm_cpp_sdk//:proxy_wasm_intrinsics_lite",
+        "@proxy_wasm_cpp_sdk//:proxy_wasm_intrinsics_full",
     ],
 )
 
