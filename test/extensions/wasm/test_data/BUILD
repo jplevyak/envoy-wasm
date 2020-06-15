@@ -84,10 +84,16 @@ wasm_cc_binary(
     ],
 )
 
+cc_proto_library(
+    name = "declare_properties_proto_cc_wasm_proto",
+    deps = ["//source/extensions/common/wasm:declare_property_wasm_proto"],
+)
+
 wasm_cc_binary(
     name = "speed_cpp.wasm",
     srcs = ["speed_cpp.cc"],
     deps = [
+        ":declare_properties_proto_cc_wasm_proto",
         "@proxy_wasm_cpp_sdk//:proxy_wasm_intrinsics_full",
     ],
 )

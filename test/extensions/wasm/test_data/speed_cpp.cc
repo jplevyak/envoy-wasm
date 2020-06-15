@@ -11,7 +11,7 @@ using envoy::config::core::v3::GrpcService;
 #include "include/proxy-wasm/null_plugin.h"
 #endif
 
-// #include "source/extensions/common/wasm/declare_property.pb.h"
+#include "source/extensions/common/wasm/declare_property.pb.h"
 
 START_WASM_PLUGIN(WasmSpeedCpp)
 
@@ -108,7 +108,6 @@ void json_deserialize_test() {
 
   grpc_service.mutable_envoy_grpc()->set_cluster_name(value);
   google::protobuf::util::MessageToJsonString(grpc_service, &json);
-
 }
 
 WASM_EXPORT(uint32_t, proxy_on_vm_start, (uint32_t, uint32_t configuration_size)) {
