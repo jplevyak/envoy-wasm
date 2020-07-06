@@ -28,7 +28,7 @@ WasmSinkFactory::createStatsSink(const Protobuf::Message& config,
       MessageUtil::downcastAndValidate<const envoy::extensions::StatSinks::v3::Wasm&>(
           config, server.messageValidationContext().staticValidationVisitor());
 
-  auto wasm_sink = std::make_unique<WasmStatSink>(config.config().root_id(), nullptr);
+  auto wasm_sink = std::make_unique<WasmStatSink>(nullptr);
 
   auto plugin = std::make_shared<Common::Wasm::Plugin>(
       wasm_config.config().name(), wasm_config.config().root_id(), wasm_config.config().vm_config().vm_id(),
@@ -36,15 +36,12 @@ WasmSinkFactory::createStatsSink(const Protobuf::Message& config,
       envoy::config::core::v3::TrafficDirection::UNSPECIFIED, context.localInfo(),
       nullptr /* listener_metadata */);
 
-  auto callback = [wasm_sink, &context, singleton, plugin](Common::Wasm::WasmHandleSharedPtr base_wasm) {
-    // Per-thread WASM VM.
-    // NB: the Slot set() call doesn't complete inline, so all arguments must outlive this call.
-    auto tls_slot = context.threadLocal().allocateSlot();
-    tls_slot->set([base_wasm, plugin](Event::Dispatcher& dispatcher) {
-      return std::static_pointer_cast<ThreadLocal::ThreadLocalObject>(
-          Common::Wasm::getOrCreateThreadLocalWasm(base_wasm, plugin, dispatcher));
-    });
-    wasm_sink->setTlsSlot(std::move(tls_slot));
+  auto callback = [wasm_sink, &context, plugin](Common::Wasm::WasmHandleSharedPtr base_wasm) {
+    auto root_context = base_wasm->wasm()->getOrCreateRootContext(plugin);
+      if (!base_wasm->wasm()->configure(root_context, plugin)) {
+        return nullptr;
+      }
+      wasm_sink->setSingleton(base_wasm);
   };
 
   Common::Wasm::createWasm(wasm_config.config().vm_config(), plugin, context.scope().createScope(""),

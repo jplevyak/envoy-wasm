@@ -44,3 +44,18 @@ inline std::vector<DnsResult> parseDnsResults(StringView data) {
   }
   return results;
 }
+
+inline std::vector<std::string> parseStatResults(StringView data) {
+  const uint32_t* pn = reinterpret_cast<const uint32_t*>(data.data());
+  uint32_t n = *pn++;
+  std::vector<std::string> results;
+  results.resize(n);
+  const char* pa = data.data() + sizeof(uint32_t);
+  for (uint32_t i = 0; i < n; i++) {
+    auto& e = results[i];
+    auto alen = strlen(pa);
+    e.assign(pa, alen);
+    pa += alen + 1;
+  }
+  return results;
+}

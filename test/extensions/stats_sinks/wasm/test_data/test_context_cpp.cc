@@ -33,6 +33,10 @@ static RegisterContextFactory register_TestContext(CONTEXT_FACTORY(TestContext),
 void TestContext::onStat(uint32_t result_size) {
     logWarn("TestContext::onStat");
     auto stats_buffer = getBufferBytes(WasmBufferType::CallData, 0, result_size);
+    auto stats = parseStatResults(stats_buffer->view());
+    for (auto& e : stats) {
+      logInfo("TestContext::onStats stat: " + e);
+    }
 }
 
 bool TestRootContext::onDone() {

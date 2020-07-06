@@ -27,24 +27,23 @@ using Envoy::Extensions::Common::Wasm::WasmHandle;
 
 class WasmStatSink : public Stats::Sink {
 public:
-  WasmStatSink(absl::string_view root_id, ThreadLocal::SlotPtr tls_slot)
-      : root_id_(root_id), tls_slot_(std::move(tls_slot)) {}
+  WasmStatSink(Common::Wasm::WasmHandleSharedPtr singleton)
+      : singleton_(std::move(singleton)) {}
   
   void flush(Stats::MetricSnapshot& snapshot) {
       WasmHandle& wasm_handle = tls_slot_->getTyped<WasmHandle>();
       wasm_handle.wasm()->onStat(root_id_, snapshot);
   }
 
-  void setTlsSlot(ThreadLocal::SlotPtr tls_slot) {
-    ASSERT(tls_slot_ == nullptr);
-    tls_slot_ = std::move(tls_slot);
+  void setSingleton(Common::Wasm::WasmHandleSharedPtr singleton) {
+    ASSERT(singleton == nullptr);
+    singleton_ = std::move(singleton);
   }
   
   void WasmStatSink::onHistogramComplete(const Stats::Histogram& histogram, uint64_t value) {}
 
 private:
-  std::string root_id_;
-  ThreadLocal::SlotPtr tls_slot_;
+  Common::Wasm::WasmHandleSharedPtr singleton_;
 };
 
 } // namespace Wasm

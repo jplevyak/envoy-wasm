@@ -217,24 +217,29 @@ void Context::onStat(Envoy::Stats::MetricSnapshot& snapshot) {
   uint32_t s = 0;
   for (const auto& counter : snapshot.counters()) {
     if (counter.counter_.get().used()) {
-      s += counter.counter_.get().name().size() + 1 + sizeof(counter.delta_) + 5; // null terminated
+      s += absl::StrCat(counter.counter_.get().name(), ".", counter.delta_, "|c/n").size() + 1;
     }
   }
 
   for (const auto& gauge : snapshot.gauges()) {
     if (gauge.get().used()) {
-      s += gauge.get().name().size() + 1 + sizeof(gauge.get().value()) + 5; // null terminated
+      s += absl::StrCat(gauge.get().name(), ".", gauge.get().value(), "|g/n").size() + 1;
     }
   }
+  s += sizeof(uint32_t);
 
   auto buffer = std::unique_ptr<char[]>(new char[s]);
   char* b = buffer.get();
 
+  uint32_t n = snapshot.counters().size() + snapshot.gauges().size();
+  memcpy(b, &n, sizeof(uint32_t));
+  b += sizeof(uint32_t);
+
   for (const auto& counter : snapshot.counters()) {
     if (counter.counter_.get().used()) {
-      std::string flush_counter =
-          std::string(absl::StrCat(counter.counter_.get().name(), ".", counter.delta_, "|c/n"));
-      memcpy(b, &flush_counter, flush_counter.size());
+      absl::string_view flush_counter =
+          absl::StrCat(counter.counter_.get().name(), ".", counter.delta_, "|c/n");
+      memcpy(b, flush_counter.data(), flush_counter.size());
       b += flush_counter.size();
       *b++ = 0;
     }
@@ -242,9 +247,9 @@ void Context::onStat(Envoy::Stats::MetricSnapshot& snapshot) {
 
   for (const auto& gauge : snapshot.gauges()) {
     if (gauge.get().used()) {
-      std::string gauge_counter =
-          std::string(absl::StrCat(gauge.get().name(), ".", gauge.get().value(), "|g/n"));
-      memcpy(b, &gauge_counter, gauge_counter.size());
+      absl::string_view gauge_counter =
+          absl::StrCat(gauge.get().name(), ".", gauge.get().value(), "|g/n");
+      memcpy(b, gauge_counter.data(), gauge_counter.size());
       b += gauge_counter.size();
       *b++ = 0;
     }

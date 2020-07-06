@@ -77,7 +77,10 @@ TEST_P(WasmCommonContextTest, OnStat) {
   setupContext();
 
   EXPECT_CALL(context(), log_(spdlog::level::warn, Eq("TestContext::onStat")));
- 
+  EXPECT_CALL(context(),
+              log_(spdlog::level::info, Eq("TestContext::onStats stat: test_counter.1|c/n")));
+  EXPECT_CALL(context(),
+              log_(spdlog::level::info, Eq("TestContext::onStats stat: test_gauge.2|g/n")));
   EXPECT_CALL(root_context(), log_(spdlog::level::warn, Eq("TestRootContext::onDone 1")));
 
   NiceMock<Stats::MockCounter> counter;
