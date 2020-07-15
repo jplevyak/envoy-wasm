@@ -137,9 +137,13 @@ elif [[ "$CI_TARGET" == "bazel.sizeopt" ]]; then
   bazel test ${BAZEL_BUILD_OPTIONS} --config=sizeopt ${TEST_TARGETS}
   exit 0
 elif [[ "$CI_TARGET" == "bazel.gcc" ]]; then
+  BAZEL_BUILD_OPTIONS="${BAZEL_BUILD_OPTIONS} --test_env=HEAPCHECK="	
   setup_gcc_toolchain
   echo "bazel fastbuild build..."
-  bazel_binary_build fastbuild
+  bazel_binary_build release
+
+  echo "Testing ${TEST_TARGETS}"
+  bazel_with_collection test ${BAZEL_BUILD_OPTIONS} -c opt ${TEST_TARGETS}
   exit 0
 elif [[ "$CI_TARGET" == "bazel.debug" ]]; then
   setup_clang_toolchain
@@ -159,6 +163,19 @@ elif [[ "$CI_TARGET" == "bazel.asan" ]]; then
   echo "bazel ASAN/UBSAN debug build with tests"
   echo "Building and testing envoy tests ${TEST_TARGETS}"
   bazel_with_collection test ${BAZEL_BUILD_OPTIONS} ${TEST_TARGETS}
+  if [ "${ENVOY_BUILD_FILTER_EXAMPLE}" == "1" ]; then
+    echo "Building and testing envoy-filter-example tests..."
+    pushd "${ENVOY_FILTER_EXAMPLE_SRCDIR}"
+    bazel_with_collection test ${BAZEL_BUILD_OPTIONS} ${ENVOY_FILTER_EXAMPLE_TESTS}
+    popd
+  fi
+  # Also validate that integration test traffic tapping (useful when debugging etc.)
+  # works. This requires that we set TAP_PATH. We do this under bazel.asan to
+  # ensure a debug build in CI.
+  echo "Validating integration test traffic tapping..."
+  bazel_with_collection test ${BAZEL_BUILD_OPTIONS} \
+    --run_under=@envoy//bazel/test:verify_tap_test.sh \
+    //test/extensions/transport_sockets/tls/integration:ssl_integration_test
   exit 0
 elif [[ "$CI_TARGET" == "bazel.tsan" ]]; then
   setup_clang_toolchain

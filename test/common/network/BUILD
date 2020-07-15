@@ -4,7 +4,6 @@ load(
     "envoy_cc_benchmark_binary",
     "envoy_cc_fuzz_test",
     "envoy_cc_test",
-    "envoy_cc_test_binary",
     "envoy_cc_test_library",
     "envoy_package",
 )
@@ -278,6 +277,7 @@ envoy_cc_test(
 envoy_cc_test(
     name = "addr_family_aware_socket_option_impl_test",
     srcs = ["addr_family_aware_socket_option_impl_test.cc"],
+    tags = ["fails_on_windows"],
     deps = [
         ":socket_option_test",
         "//source/common/network:addr_family_aware_socket_option_lib",
@@ -309,7 +309,7 @@ envoy_cc_fuzz_test(
     ],
 )
 
-envoy_cc_test_binary(
+envoy_cc_benchmark_binary(
     name = "lc_trie_speed_test",
     srcs = ["lc_trie_speed_test.cc"],
     external_deps = [
@@ -319,6 +319,11 @@ envoy_cc_test_binary(
         "//source/common/network:lc_trie_lib",
         "//source/common/network:utility_lib",
     ],
+)
+
+envoy_benchmark_test(
+    name = "lc_trie_speed_test_benchmark_test",
+    benchmark_binary = "lc_trie_speed_test",
 )
 
 envoy_cc_test(
